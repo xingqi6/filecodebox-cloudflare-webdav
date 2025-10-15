@@ -3,7 +3,12 @@ name: Deploy to Cloudflare Workers
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Optional note for this run
+        required: false
+        type: string
 
 jobs:
   deploy:
@@ -11,6 +16,14 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Debug event context
+        run: |
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Repo: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Reason: ${{ inputs.reason }}"
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -28,6 +41,13 @@ jobs:
       # 回退到稳定：不再模板替换 wrangler.toml（使用仓库内已配置的绑定）
       - name: Show Wrangler version
         run: wrangler --version
+
+      - name: Validate mandatory secrets
+        run: |
+          missing=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then echo "::error::Missing secret CLOUDFLARE_API_TOKEN"; missing=1; fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"; missing=1; fi
+          if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
 
       - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
         if: ${{ secrets.PERMANENT_PASSWORD }}
