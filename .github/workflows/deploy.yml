@@ -50,12 +50,16 @@ jobs:
           if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
 
       - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
-        if: ${{ secrets.PERMANENT_PASSWORD }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
         run: |
-          wrangler secret put PERMANENT_PASSWORD --text "${{ secrets.PERMANENT_PASSWORD }}"
+          if [ -n "$PERMANENT_PASSWORD" ]; then
+            wrangler secret put PERMANENT_PASSWORD --text "$PERMANENT_PASSWORD"
+          else
+            echo "PERMANENT_PASSWORD not set in secrets. Skip setting secret."
+          fi
 
       - name: Deploy with Wrangler
         env:
