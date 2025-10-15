@@ -1,0 +1,161 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Optional note for this run
+        required: false
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Debug event context
+        run: |
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Repo: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Reason: ${{ inputs.reason }}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Wrangler
+        run: npm i -g wrangler@4
+
+      # 回退到稳定：不再模板替换 wrangler.toml（使用仓库内已配置的绑定）
+      - name: Show Wrangler version
+        run: wrangler --version
+
+      - name: Validate mandatory secrets
+        run: |
+          missing=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then echo "::error::Missing secret CLOUDFLARE_API_TOKEN"; missing=1; fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"; missing=1; fi
+          if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
+
+      - name: Auto-provision KV/R2 if missing (names can be customized via Variables)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_KV_ID: ${{ secrets.CF_KV_ID || vars.CF_KV_ID }}
+          CF_KV_PREVIEW_ID: ${{ secrets.CF_KV_PREVIEW_ID || vars.CF_KV_PREVIEW_ID }}
+          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET || vars.CF_R2_BUCKET }}
+          CF_R2_PREVIEW_BUCKET: ${{ secrets.CF_R2_PREVIEW_BUCKET || vars.CF_R2_PREVIEW_BUCKET }}
+        run: |
+          set -e
+          # Defaults when not provided
+          : "${CF_R2_BUCKET:=filecodebox-storage}"
+          : "${CF_R2_PREVIEW_BUCKET:=filecodebox-storage-preview}"
+
+          echo "Account: $CLOUDFLARE_ACCOUNT_ID"
+          echo "KV_ID(in): ${CF_KV_ID:-<empty>}  KV_PREVIEW_ID(in): ${CF_KV_PREVIEW_ID:-<empty>}"
+          echo "R2_BUCKET(in): $CF_R2_BUCKET  R2_PREVIEW_BUCKET(in): $CF_R2_PREVIEW_BUCKET"
+
+          # Create R2 buckets if not exist
+          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_BUCKET$"; then
+            echo "R2 bucket '$CF_R2_BUCKET' not found. Creating..."
+            wrangler r2 bucket create "$CF_R2_BUCKET"
+          else
+            echo "R2 bucket '$CF_R2_BUCKET' exists."
+          fi
+
+          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_PREVIEW_BUCKET$"; then
+            echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' not found. Creating..."
+            wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET"
+          else
+            echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' exists."
+          fi
+
+          # Create KV namespaces if IDs not provided
+          if [ -z "$CF_KV_ID" ]; then
+            echo "KV id missing. Creating KV namespace 'FILECODEBOX_KV'..."
+            CF_KV_ID=$(wrangler kv namespace create FILECODEBOX_KV --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+          fi
+          if [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo "KV preview id missing. Creating preview KV namespace 'FILECODEBOX_KV'..."
+            CF_KV_PREVIEW_ID=$(wrangler kv namespace create FILECODEBOX_KV --preview --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+          fi
+
+          echo "Provisioned IDs: KV_ID=$CF_KV_ID  KV_PREVIEW_ID=$CF_KV_PREVIEW_ID"
+          echo "R2: bucket=$CF_R2_BUCKET preview_bucket=$CF_R2_PREVIEW_BUCKET"
+
+          # Export for next steps
+          echo "CF_KV_ID=$CF_KV_ID" >> $GITHUB_ENV
+          echo "CF_KV_PREVIEW_ID=$CF_KV_PREVIEW_ID" >> $GITHUB_ENV
+          echo "CF_R2_BUCKET=$CF_R2_BUCKET" >> $GITHUB_ENV
+          echo "CF_R2_PREVIEW_BUCKET=$CF_R2_PREVIEW_BUCKET" >> $GITHUB_ENV
+
+      - name: Template wrangler.toml with resolved values
+        env:
+          CF_KV_ID: ${{ env.CF_KV_ID }}
+          CF_KV_PREVIEW_ID: ${{ env.CF_KV_PREVIEW_ID }}
+          CF_R2_BUCKET: ${{ env.CF_R2_BUCKET }}
+          CF_R2_PREVIEW_BUCKET: ${{ env.CF_R2_PREVIEW_BUCKET }}
+        run: |
+          cp wrangler.toml wrangler.gen.toml
+          set -e
+          echo "Filling placeholders from Secrets/Variables..."
+          required_missing=0
+          if [ -z "$CF_KV_ID" ]; then echo "::error::Missing CF_KV_ID (Secret or Variable)"; required_missing=1; fi
+          if [ -z "$CF_R2_BUCKET" ]; then echo "::error::Missing CF_R2_BUCKET (Secret or Variable)"; required_missing=1; fi
+          if [ $required_missing -eq 1 ]; then echo "Missing required repository variables. Please add them in Settings → Secrets and variables → Actions."; exit 1; fi
+
+          sed -i 's/REPLACE_WITH_YOUR_KV_ID/'"$CF_KV_ID"'/g' wrangler.gen.toml
+          sed -i 's/REPLACE_WITH_YOUR_R2_BUCKET/'"$CF_R2_BUCKET"'/g' wrangler.gen.toml
+
+          # optional preview bindings
+          if [ -n "$CF_KV_PREVIEW_ID" ]; then
+            sed -i 's/REPLACE_WITH_YOUR_KV_PREVIEW_ID/'"$CF_KV_PREVIEW_ID"'/g' wrangler.gen.toml
+          fi
+          if [ -n "$CF_R2_PREVIEW_BUCKET" ]; then
+            sed -i 's/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/'"$CF_R2_PREVIEW_BUCKET"'/g' wrangler.gen.toml
+          fi
+          echo "---- wrangler.gen.toml (diff) ----"
+          diff -u wrangler.toml wrangler.gen.toml || true
+          echo "---- wrangler.gen.toml (content) ----"
+          cat wrangler.gen.toml
+
+      # Skipping explicit verify step because we auto-provision when missing
+
+      - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
+        run: |
+          if [ -n "$PERMANENT_PASSWORD" ]; then
+            echo -n "$PERMANENT_PASSWORD" | wrangler secret put PERMANENT_PASSWORD
+          else
+            echo "PERMANENT_PASSWORD not set in secrets. Skip setting secret."
+          fi
+
+      - name: Deploy with Wrangler
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # 可选：Secrets/Vars 可在 Dashboard 配置，也可在此注入
+        run: |
+          # 组装 --var 参数，仅对已设置的变量注入，避免覆盖 Dashboard 配置
+          if [ -f wrangler.gen.toml ]; then
+            echo "Deploying with wrangler.gen.toml"
+            wrangler deploy --config wrangler.gen.toml
+          else
+            wrangler deploy
+          fi
+
