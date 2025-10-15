@@ -49,7 +49,7 @@ jobs:
           if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"; missing=1; fi
           if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
 
-      - name: Auto-provision KV/R2 if missing (names can be customized via Variables)
+      - name: Auto-provision KV/R2 if missing (randomize names when unset)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -59,23 +59,43 @@ jobs:
           CF_R2_PREVIEW_BUCKET: ${{ secrets.CF_R2_PREVIEW_BUCKET || vars.CF_R2_PREVIEW_BUCKET }}
         run: |
           set -e
-          # Defaults when not provided
-          : "${CF_R2_BUCKET:=filecodebox-storage}"
-          : "${CF_R2_PREVIEW_BUCKET:=filecodebox-storage-preview}"
+          # Generate a short random suffix (lowercase alnum)
+          RAND=${RAND:-$(head -c 64 /dev/urandom | tr -dc 'a-z0-9' | head -c 8)}
+
+          # Defaults when not provided (randomized per run for isolation)
+          CF_R2_BUCKET=${CF_R2_BUCKET:-filecodebox-${RAND}}
+          CF_R2_PREVIEW_BUCKET=${CF_R2_PREVIEW_BUCKET:-filecodebox-preview-${RAND}}
+
+          # Also randomize KV namespace titles when IDs are not provided
+          KV_TITLE=${KV_TITLE:-FILECODEBOX_KV_${RAND}}
+          KV_TITLE_PREVIEW=${KV_TITLE_PREVIEW:-FILECODEBOX_KV_PREVIEW_${RAND}}
 
           echo "Account: $CLOUDFLARE_ACCOUNT_ID"
           echo "KV_ID(in): ${CF_KV_ID:-<empty>}  KV_PREVIEW_ID(in): ${CF_KV_PREVIEW_ID:-<empty>}"
           echo "R2_BUCKET(in): $CF_R2_BUCKET  R2_PREVIEW_BUCKET(in): $CF_R2_PREVIEW_BUCKET"
 
+          # Helper to list bucket names robustly (prefers JSON via jq if available)
+          list_buckets() {
+            if wrangler r2 bucket list --json >/tmp/r2.json 2>/dev/null; then
+              if command -v jq >/dev/null 2>&1; then
+                jq -r '.[]?.name' /tmp/r2.json
+              else
+                sed -n 's/.*"name"\s*:\s*"\([^"]*\)".*/\1/p' /tmp/r2.json
+              fi
+            else
+              wrangler r2 bucket list | awk 'NR>1 {print $1}'
+            fi
+          }
+
           # Create R2 buckets if not exist
-          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_BUCKET$"; then
+          if ! list_buckets | grep -Fxq "$CF_R2_BUCKET"; then
             echo "R2 bucket '$CF_R2_BUCKET' not found. Creating..."
             wrangler r2 bucket create "$CF_R2_BUCKET"
           else
             echo "R2 bucket '$CF_R2_BUCKET' exists."
           fi
 
-          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_PREVIEW_BUCKET$"; then
+          if ! list_buckets | grep -Fxq "$CF_R2_PREVIEW_BUCKET"; then
             echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' not found. Creating..."
             wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET"
           else
@@ -84,12 +104,28 @@ jobs:
 
           # Create KV namespaces if IDs not provided
           if [ -z "$CF_KV_ID" ]; then
-            echo "KV id missing. Creating KV namespace 'FILECODEBOX_KV'..."
-            CF_KV_ID=$(wrangler kv namespace create FILECODEBOX_KV --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            echo "KV id missing. Creating KV namespace '$KV_TITLE'..."
+            if wrangler kv namespace create "$KV_TITLE" --json >/tmp/kv.json 2>/dev/null; then
+              if command -v jq >/dev/null 2>&1; then
+                CF_KV_ID=$(jq -r '.id // .result?.id' /tmp/kv.json)
+              else
+                CF_KV_ID=$(sed -n 's/.*"id"\s*:\s*"\([^"]*\)".*/\1/p' /tmp/kv.json | head -n1)
+              fi
+            else
+              echo "::error::Failed to create KV namespace $KV_TITLE"; exit 1
+            fi
           fi
           if [ -z "$CF_KV_PREVIEW_ID" ]; then
-            echo "KV preview id missing. Creating preview KV namespace 'FILECODEBOX_KV'..."
-            CF_KV_PREVIEW_ID=$(wrangler kv namespace create FILECODEBOX_KV --preview --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            echo "KV preview id missing. Creating preview KV namespace '$KV_TITLE_PREVIEW'..."
+            if wrangler kv namespace create "$KV_TITLE_PREVIEW" --preview --json >/tmp/kvp.json 2>/dev/null; then
+              if command -v jq >/dev/null 2>&1; then
+                CF_KV_PREVIEW_ID=$(jq -r '.id // .result?.id' /tmp/kvp.json)
+              else
+                CF_KV_PREVIEW_ID=$(sed -n 's/.*"id"\s*:\s*"\([^"]*\)".*/\1/p' /tmp/kvp.json | head -n1)
+              fi
+            else
+              echo "::error::Failed to create preview KV namespace $KV_TITLE_PREVIEW"; exit 1
+            fi
           fi
 
           echo "Provisioned IDs: KV_ID=$CF_KV_ID  KV_PREVIEW_ID=$CF_KV_PREVIEW_ID"
