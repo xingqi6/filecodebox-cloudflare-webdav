@@ -32,23 +32,34 @@ jobs:
           sed -i 's/"__REPLACE_WITH_YOUR_R2_BUCKET__"/"${{ vars.CF_R2_BUCKET }}"/g' wrangler.toml
           sed -i 's/"__REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET__"/"${{ vars.CF_R2_PREVIEW_BUCKET || vars.CF_R2_BUCKET }}"/g' wrangler.toml
 
+      - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
+        if: ${{ secrets.PERMANENT_PASSWORD != '' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          wrangler secret put PERMANENT_PASSWORD --text "${{ secrets.PERMANENT_PASSWORD }}"
+
       - name: Deploy with Wrangler
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # 可选：Secrets/Vars 可在 Dashboard 配置，也可在此注入
-          PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
-          MAX_FILE_SIZE: ${{ vars.MAX_FILE_SIZE }}
-          MAX_TEXT_SIZE: ${{ vars.MAX_TEXT_SIZE }}
-          QR_API: ${{ vars.QR_API }}
-          NOTICE_TTL_HOURS: ${{ vars.NOTICE_TTL_HOURS }}
-          UPLOAD_FILE_RPM: ${{ vars.UPLOAD_FILE_RPM }}
-          UPLOAD_TEXT_RPM: ${{ vars.UPLOAD_TEXT_RPM }}
-          VERIFY_PERM_RPM: ${{ vars.VERIFY_PERM_RPM }}
-          GET_INFO_RPM: ${{ vars.GET_INFO_RPM }}
-          DOWNLOAD_RPM: ${{ vars.DOWNLOAD_RPM }}
         run: |
-          # 将 GitHub 环境变量透传给 wrangler（仅在本地 wrangler.toml 未设置时生效）
-          # Dashboard 上的 Bindings（FILECODEBOX_KV / FILECODEBOX_R2）需提前手动绑定
-          wrangler deploy
+          # 组装 --var 参数，仅对已设置的变量注入，避免覆盖 Dashboard 配置
+          set -e
+          VAR_ARGS=()
+          add_var() { if [ -n "$2" ]; then VAR_ARGS+=(--var "$1=$2"); fi }
+          add_var MAX_FILE_SIZE "${{ vars.MAX_FILE_SIZE }}"
+          add_var MAX_TEXT_SIZE "${{ vars.MAX_TEXT_SIZE }}"
+          add_var QR_API "${{ vars.QR_API }}"
+          add_var NOTICE_TTL_HOURS "${{ vars.NOTICE_TTL_HOURS }}"
+          add_var UPLOAD_FILE_RPM "${{ vars.UPLOAD_FILE_RPM }}"
+          add_var UPLOAD_TEXT_RPM "${{ vars.UPLOAD_TEXT_RPM }}"
+          add_var VERIFY_PERM_RPM "${{ vars.VERIFY_PERM_RPM }}"
+          add_var GET_INFO_RPM "${{ vars.GET_INFO_RPM }}"
+          add_var DOWNLOAD_RPM "${{ vars.DOWNLOAD_RPM }}"
+          # 如需用 Vars 覆盖 PERMANENT_PASSWORD（不建议），可取消下一行注释
+          # add_var PERMANENT_PASSWORD "${{ vars.PERMANENT_PASSWORD }}"
+          wrangler deploy "${VAR_ARGS[@]}"
 
