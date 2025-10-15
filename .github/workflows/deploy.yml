@@ -25,28 +25,9 @@ jobs:
       - name: Install Wrangler
         run: npm i -g wrangler@4
 
-      - name: Template wrangler.toml with bindings
-        env:
-          IN_CF_KV_ID: ${{ secrets.CF_KV_ID }}
-          IN_CF_KV_PREVIEW_ID: ${{ secrets.CF_KV_PREVIEW_ID }}
-          IN_CF_R2_BUCKET: ${{ vars.CF_R2_BUCKET }}
-          IN_CF_R2_PREVIEW_BUCKET: ${{ vars.CF_R2_PREVIEW_BUCKET }}
-        run: |
-          set -e
-          KV_ID="$IN_CF_KV_ID"
-          KV_PREVIEW_ID="$IN_CF_KV_PREVIEW_ID"
-          if [ -z "$KV_PREVIEW_ID" ]; then KV_PREVIEW_ID="$KV_ID"; fi
-          R2_BUCKET="$IN_CF_R2_BUCKET"
-          R2_PREVIEW_BUCKET="$IN_CF_R2_PREVIEW_BUCKET"
-          if [ -z "$R2_PREVIEW_BUCKET" ]; then R2_PREVIEW_BUCKET="$R2_BUCKET"; fi
-          if [ -z "$KV_ID" ] || [ -z "$R2_BUCKET" ]; then
-            echo "CF_KV_ID or CF_R2_BUCKET is not set." >&2
-            exit 1
-          fi
-          sed -i "s/\"__REPLACE_WITH_YOUR_KV_ID__\"/\"$KV_ID\"/g" wrangler.toml
-          sed -i "s/\"__REPLACE_WITH_YOUR_KV_PREVIEW_ID__\"/\"$KV_PREVIEW_ID\"/g" wrangler.toml
-          sed -i "s/\"__REPLACE_WITH_YOUR_R2_BUCKET__\"/\"$R2_BUCKET\"/g" wrangler.toml
-          sed -i "s/\"__REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET__\"/\"$R2_PREVIEW_BUCKET\"/g" wrangler.toml
+      # 回退到稳定：不再模板替换 wrangler.toml（使用仓库内已配置的绑定）
+      - name: Show Wrangler version
+        run: wrangler --version
 
       - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
         if: ${{ secrets.PERMANENT_PASSWORD }}
@@ -63,19 +44,5 @@ jobs:
           # 可选：Secrets/Vars 可在 Dashboard 配置，也可在此注入
         run: |
           # 组装 --var 参数，仅对已设置的变量注入，避免覆盖 Dashboard 配置
-          set -e
-          VAR_ARGS=()
-          add_var() { if [ -n "$2" ]; then VAR_ARGS+=(--var "$1=$2"); fi }
-          add_var MAX_FILE_SIZE "${{ vars.MAX_FILE_SIZE }}"
-          add_var MAX_TEXT_SIZE "${{ vars.MAX_TEXT_SIZE }}"
-          add_var QR_API "${{ vars.QR_API }}"
-          add_var NOTICE_TTL_HOURS "${{ vars.NOTICE_TTL_HOURS }}"
-          add_var UPLOAD_FILE_RPM "${{ vars.UPLOAD_FILE_RPM }}"
-          add_var UPLOAD_TEXT_RPM "${{ vars.UPLOAD_TEXT_RPM }}"
-          add_var VERIFY_PERM_RPM "${{ vars.VERIFY_PERM_RPM }}"
-          add_var GET_INFO_RPM "${{ vars.GET_INFO_RPM }}"
-          add_var DOWNLOAD_RPM "${{ vars.DOWNLOAD_RPM }}"
-          # 如需用 Vars 覆盖 PERMANENT_PASSWORD（不建议），可取消下一行注释
-          # add_var PERMANENT_PASSWORD "${{ vars.PERMANENT_PASSWORD }}"
-          wrangler deploy "${VAR_ARGS[@]}"
+          wrangler deploy
 
