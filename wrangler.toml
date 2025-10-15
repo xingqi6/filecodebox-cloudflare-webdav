@@ -1,0 +1,34 @@
+name = "filecodebox"
+main = "src/index.js"
+compatibility_date = "2024-10-14"
+compatibility_flags = ["nodejs_compat"]
+
+[[kv_namespaces]]
+binding = "FILECODEBOX_KV"
+id = "__REPLACE_WITH_YOUR_KV_ID__"
+preview_id = "__REPLACE_WITH_YOUR_KV_PREVIEW_ID__"
+
+[[r2_buckets]]
+binding = "FILECODEBOX_R2"
+bucket_name = "__REPLACE_WITH_YOUR_R2_BUCKET__"
+preview_bucket_name = "__REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET__"
+
+[vars]
+# 建议用 Secrets 配置敏感变量：
+#   wrangler secret put PERMANENT_PASSWORD         # 永久保存的密码，默认 123456
+
+# 以下为非敏感/容量限制等可公开变量（可按需覆盖默认值）
+MAX_FILE_SIZE = "90"                               # 文件最大尺寸（MB 或字节）
+MAX_TEXT_SIZE = "1"                                # 文本最大尺寸（MB 或字节）
+QR_API = "https://api.qrserver.com/v1/create-qr-code/"   # 二维码服务地址
+NOTICE_TTL_HOURS = "24"                           # 首次声明弹窗再次出现的间隔（小时）
+
+# 速率限制（每分钟请求数上限）
+UPLOAD_FILE_RPM = "10"
+UPLOAD_TEXT_RPM = "20"
+VERIFY_PERM_RPM = "20"
+GET_INFO_RPM = "120"
+DOWNLOAD_RPM = "60"
+
+[triggers]
+crons = ["*/5 * * * *"]
