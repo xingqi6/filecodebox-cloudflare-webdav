@@ -1,0 +1,36 @@
+{
+  "name": "filecodebox-cloudflare",
+  "version": "1.0.0",
+  "description": "FileCodeBox deployed on Cloudflare Workers - 部署在 Cloudflare Workers 上的文件快递柜",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "dev:remote": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "build": "echo Build completed",
+    "start": "wrangler dev",
+    "logs": "wrangler tail"
+  },
+  "keywords": [
+    "filecodebox",
+    "cloudflare",
+    "workers",
+    "file-sharing",
+    "文件分享"
+  ],
+  "author": "FileCodeBox Team",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^4.42.2"
+  },
+  "dependencies": {
+    "hono": "^3.12.0",
+    "uuid": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}
