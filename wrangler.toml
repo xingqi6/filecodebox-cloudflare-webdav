@@ -5,13 +5,13 @@ compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "FILECODEBOX_KV"
-id = "005c15781f3c430da2d0e335eb2e2333"
-preview_id = "cbdf9a59264948a4bf0fa2fabdd28ee8"
+id = "PLACEHOLDER_KV_ID"  # 需要创建 KV 命名空间后替换
+preview_id = "PLACEHOLDER_KV_PREVIEW_ID"  # 需要创建 KV 命名空间后替换
 
 [[r2_buckets]]
 binding = "FILECODEBOX_R2"
-bucket_name = "filecodebox-storage"
-preview_bucket_name = "filecodebox-storage-preview"
+bucket_name = "filecodebox-r2-f6bd1dfe"
+preview_bucket_name = "filecodebox-r2-f6bd1dfe-preview"
 
 [vars]
 # 建议用 Secrets 配置敏感变量：
