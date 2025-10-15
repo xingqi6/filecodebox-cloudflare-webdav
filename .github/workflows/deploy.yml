@@ -1,294 +1,161 @@
-name: Deploy FileCodeBox to Cloudflare Workers
+name: Deploy to Cloudflare Workers
 
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # 允许手动触发
-
-env:
-  # 资源名称（使用项目中生成的名称）
-  R2_BUCKET_NAME: "filecodebox-r2-f6bd1dfe"
-  R2_PREVIEW_BUCKET_NAME: "filecodebox-r2-f6bd1dfe-preview"
-  KV_NAMESPACE_NAME: "filecodebox-kv-2c88c777"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Optional note for this run
+        required: false
+        type: string
 
 jobs:
-  setup-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
-    name: Setup Resources and Deploy
-    
+    permissions:
+      contents: read
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Debug event context
+        run: |
+          echo "Actor: $GITHUB_ACTOR"
+          echo "Repo: $GITHUB_REPOSITORY"
+          echo "Ref: $GITHUB_REF"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Reason: ${{ inputs.reason }}"
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: npm ci
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-    - name: Install Wrangler
-      run: npm install -g wrangler
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Authenticate with Cloudflare
-      run: |
-        echo "Setting up Cloudflare authentication..."
-        wrangler whoami
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Install Wrangler
+        run: npm i -g wrangler@4
 
-    - name: Create R2 Buckets
-      run: |
-        echo "🪣 Creating R2 buckets..."
-        
-        # 创建主存储桶
-        echo "Creating main bucket: $R2_BUCKET_NAME"
-        if wrangler r2 bucket create "$R2_BUCKET_NAME" 2>/dev/null; then
-          echo "✅ Main bucket created successfully"
-        else
-          echo "ℹ️ Main bucket might already exist, continuing..."
-        fi
-        
-        # 创建预览存储桶
-        echo "Creating preview bucket: $R2_PREVIEW_BUCKET_NAME"
-        if wrangler r2 bucket create "$R2_PREVIEW_BUCKET_NAME" 2>/dev/null; then
-          echo "✅ Preview bucket created successfully"
-        else
-          echo "ℹ️ Preview bucket might already exist, continuing..."
-        fi
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # 回退到稳定：不再模板替换 wrangler.toml（使用仓库内已配置的绑定）
+      - name: Show Wrangler version
+        run: wrangler --version
 
-    - name: Create KV Namespaces
-      id: create_kv
-      run: |
-        echo "🗄️ Creating KV namespaces..."
-        
-        # 创建主 KV 命名空间
-        echo "Creating main KV namespace: $KV_NAMESPACE_NAME"
-        KV_OUTPUT=$(wrangler kv:namespace create "$KV_NAMESPACE_NAME" 2>/dev/null || echo "exists")
-        
-        if [[ "$KV_OUTPUT" == "exists" ]]; then
-          echo "ℹ️ Main KV namespace might already exist"
-          # 尝试获取现有的 KV 命名空间列表
-          KV_LIST=$(wrangler kv:namespace list)
-          KV_ID=$(echo "$KV_LIST" | jq -r --arg name "$KV_NAMESPACE_NAME" '.[] | select(.title == $name) | .id' | head -1)
-          if [[ -n "$KV_ID" && "$KV_ID" != "null" ]]; then
-            echo "Found existing KV namespace ID: $KV_ID"
-            echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
+      - name: Validate mandatory secrets
+        run: |
+          missing=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then echo "::error::Missing secret CLOUDFLARE_API_TOKEN"; missing=1; fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"; missing=1; fi
+          if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
+
+      - name: Auto-provision KV/R2 if missing (names can be customized via Variables)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_KV_ID: ${{ secrets.CF_KV_ID || vars.CF_KV_ID }}
+          CF_KV_PREVIEW_ID: ${{ secrets.CF_KV_PREVIEW_ID || vars.CF_KV_PREVIEW_ID }}
+          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET || vars.CF_R2_BUCKET }}
+          CF_R2_PREVIEW_BUCKET: ${{ secrets.CF_R2_PREVIEW_BUCKET || vars.CF_R2_PREVIEW_BUCKET }}
+        run: |
+          set -e
+          # Defaults when not provided
+          : "${CF_R2_BUCKET:=filecodebox-storage}"
+          : "${CF_R2_PREVIEW_BUCKET:=filecodebox-storage-preview}"
+
+          echo "Account: $CLOUDFLARE_ACCOUNT_ID"
+          echo "KV_ID(in): ${CF_KV_ID:-<empty>}  KV_PREVIEW_ID(in): ${CF_KV_PREVIEW_ID:-<empty>}"
+          echo "R2_BUCKET(in): $CF_R2_BUCKET  R2_PREVIEW_BUCKET(in): $CF_R2_PREVIEW_BUCKET"
+
+          # Create R2 buckets if not exist
+          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_BUCKET$"; then
+            echo "R2 bucket '$CF_R2_BUCKET' not found. Creating..."
+            wrangler r2 bucket create "$CF_R2_BUCKET"
           else
-            echo "❌ Could not find existing KV namespace"
-            exit 1
+            echo "R2 bucket '$CF_R2_BUCKET' exists."
           fi
-        else
-          echo "$KV_OUTPUT"
-          KV_ID=$(echo "$KV_OUTPUT" | grep -o 'id = "[^"]*"' | sed 's/id = "\(.*\)"/\1/')
-          echo "✅ Main KV namespace created with ID: $KV_ID"
-          echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
-        fi
-        
-        # 创建预览 KV 命名空间
-        echo "Creating preview KV namespace: $KV_NAMESPACE_NAME"
-        KV_PREVIEW_OUTPUT=$(wrangler kv:namespace create "$KV_NAMESPACE_NAME" --preview 2>/dev/null || echo "exists")
-        
-        if [[ "$KV_PREVIEW_OUTPUT" == "exists" ]]; then
-          echo "ℹ️ Preview KV namespace might already exist"
-          # 尝试获取现有的预览 KV 命名空间
-          KV_PREVIEW_ID=$(echo "$KV_LIST" | jq -r --arg name "${KV_NAMESPACE_NAME}_preview" '.[] | select(.title == $name) | .id' | head -1)
-          if [[ -n "$KV_PREVIEW_ID" && "$KV_PREVIEW_ID" != "null" ]]; then
-            echo "Found existing preview KV namespace ID: $KV_PREVIEW_ID"
-            echo "kv_preview_id=$KV_PREVIEW_ID" >> $GITHUB_OUTPUT
+
+          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_PREVIEW_BUCKET$"; then
+            echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' not found. Creating..."
+            wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET"
           else
-            echo "ℹ️ Could not find existing preview KV namespace, will use main KV ID"
-            echo "kv_preview_id=$KV_ID" >> $GITHUB_OUTPUT
+            echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' exists."
           fi
-        else
-          echo "$KV_PREVIEW_OUTPUT"
-          KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -o 'preview_id = "[^"]*"' | sed 's/preview_id = "\(.*\)"/\1/')
-          if [[ -z "$KV_PREVIEW_ID" ]]; then
-            # 如果没有找到 preview_id，尝试提取 id
-            KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -o 'id = "[^"]*"' | sed 's/id = "\(.*\)"/\1/')
+
+          # Create KV namespaces if IDs not provided
+          if [ -z "$CF_KV_ID" ]; then
+            echo "KV id missing. Creating KV namespace 'FILECODEBOX_KV'..."
+            CF_KV_ID=$(wrangler kv namespace create FILECODEBOX_KV --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
           fi
-          echo "✅ Preview KV namespace created with ID: $KV_PREVIEW_ID"
-          echo "kv_preview_id=$KV_PREVIEW_ID" >> $GITHUB_OUTPUT
-        fi
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          if [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo "KV preview id missing. Creating preview KV namespace 'FILECODEBOX_KV'..."
+            CF_KV_PREVIEW_ID=$(wrangler kv namespace create FILECODEBOX_KV --preview --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+          fi
 
-    - name: Update wrangler.toml with KV IDs
-      run: |
-        echo "📝 Updating wrangler.toml with actual KV IDs..."
-        
-        KV_ID="${{ steps.create_kv.outputs.kv_id }}"
-        KV_PREVIEW_ID="${{ steps.create_kv.outputs.kv_preview_id }}"
-        
-        echo "Using KV ID: $KV_ID"
-        echo "Using KV Preview ID: $KV_PREVIEW_ID"
-        
-        # 替换占位符
-        sed -i "s/PLACEHOLDER_KV_ID/$KV_ID/g" wrangler.toml
-        sed -i "s/PLACEHOLDER_KV_PREVIEW_ID/$KV_PREVIEW_ID/g" wrangler.toml
-        
-        echo "✅ wrangler.toml updated successfully"
-        
-        # 显示更新后的配置
-        echo "Updated KV configuration:"
-        grep -A 3 "kv_namespaces" wrangler.toml
+          echo "Provisioned IDs: KV_ID=$CF_KV_ID  KV_PREVIEW_ID=$CF_KV_PREVIEW_ID"
+          echo "R2: bucket=$CF_R2_BUCKET preview_bucket=$CF_R2_PREVIEW_BUCKET"
 
-    - name: Set up Secrets
-      run: |
-        echo "🔐 Setting up Cloudflare Workers secrets..."
-        
-        # 设置永久密码（如果提供）
-        if [[ -n "${{ secrets.PERMANENT_PASSWORD }}" ]]; then
-          echo "Setting PERMANENT_PASSWORD secret..."
-          echo "${{ secrets.PERMANENT_PASSWORD }}" | wrangler secret put PERMANENT_PASSWORD
-          echo "✅ PERMANENT_PASSWORD secret set"
-        else
-          echo "ℹ️ No PERMANENT_PASSWORD provided, using default"
-        fi
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Export for next steps
+          echo "CF_KV_ID=$CF_KV_ID" >> $GITHUB_ENV
+          echo "CF_KV_PREVIEW_ID=$CF_KV_PREVIEW_ID" >> $GITHUB_ENV
+          echo "CF_R2_BUCKET=$CF_R2_BUCKET" >> $GITHUB_ENV
+          echo "CF_R2_PREVIEW_BUCKET=$CF_R2_PREVIEW_BUCKET" >> $GITHUB_ENV
 
-    - name: Deploy to Cloudflare Workers
-      run: |
-        echo "🚀 Deploying to Cloudflare Workers..."
-        
-        # 设置环境变量（如果在 GitHub Variables 中定义）
-        DEPLOY_ARGS=""
-        
-        # 添加可选的环境变量
-        if [[ -n "${{ vars.MAX_FILE_SIZE }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var MAX_FILE_SIZE=${{ vars.MAX_FILE_SIZE }}"
-        fi
-        
-        if [[ -n "${{ vars.MAX_TEXT_SIZE }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var MAX_TEXT_SIZE=${{ vars.MAX_TEXT_SIZE }}"
-        fi
-        
-        if [[ -n "${{ vars.QR_API }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var QR_API=${{ vars.QR_API }}"
-        fi
-        
-        if [[ -n "${{ vars.NOTICE_TTL_HOURS }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var NOTICE_TTL_HOURS=${{ vars.NOTICE_TTL_HOURS }}"
-        fi
-        
-        # 速率限制变量
-        if [[ -n "${{ vars.UPLOAD_FILE_RPM }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var UPLOAD_FILE_RPM=${{ vars.UPLOAD_FILE_RPM }}"
-        fi
-        
-        if [[ -n "${{ vars.UPLOAD_TEXT_RPM }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var UPLOAD_TEXT_RPM=${{ vars.UPLOAD_TEXT_RPM }}"
-        fi
-        
-        if [[ -n "${{ vars.VERIFY_PERM_RPM }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var VERIFY_PERM_RPM=${{ vars.VERIFY_PERM_RPM }}"
-        fi
-        
-        if [[ -n "${{ vars.GET_INFO_RPM }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var GET_INFO_RPM=${{ vars.GET_INFO_RPM }}"
-        fi
-        
-        if [[ -n "${{ vars.DOWNLOAD_RPM }}" ]]; then
-          DEPLOY_ARGS="$DEPLOY_ARGS --var DOWNLOAD_RPM=${{ vars.DOWNLOAD_RPM }}"
-        fi
-        
-        echo "Deploy arguments: $DEPLOY_ARGS"
-        
-        # 执行部署
-        if [[ -n "$DEPLOY_ARGS" ]]; then
-          wrangler deploy $DEPLOY_ARGS
-        else
-          wrangler deploy
-        fi
-        
-        echo "✅ Deployment completed successfully!"
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Template wrangler.toml with resolved values
+        env:
+          CF_KV_ID: ${{ env.CF_KV_ID }}
+          CF_KV_PREVIEW_ID: ${{ env.CF_KV_PREVIEW_ID }}
+          CF_R2_BUCKET: ${{ env.CF_R2_BUCKET }}
+          CF_R2_PREVIEW_BUCKET: ${{ env.CF_R2_PREVIEW_BUCKET }}
+        run: |
+          cp wrangler.toml wrangler.gen.toml
+          set -e
+          echo "Filling placeholders from Secrets/Variables..."
+          required_missing=0
+          if [ -z "$CF_KV_ID" ]; then echo "::error::Missing CF_KV_ID (Secret or Variable)"; required_missing=1; fi
+          if [ -z "$CF_R2_BUCKET" ]; then echo "::error::Missing CF_R2_BUCKET (Secret or Variable)"; required_missing=1; fi
+          if [ $required_missing -eq 1 ]; then echo "Missing required repository variables. Please add them in Settings → Secrets and variables → Actions."; exit 1; fi
 
-    - name: Get deployment info
-      run: |
-        echo "📋 Deployment Information:"
-        echo "- R2 Bucket: $R2_BUCKET_NAME"
-        echo "- R2 Preview Bucket: $R2_PREVIEW_BUCKET_NAME"
-        echo "- KV Namespace: $KV_NAMESPACE_NAME"
-        echo "- KV ID: ${{ steps.create_kv.outputs.kv_id }}"
-        echo "- KV Preview ID: ${{ steps.create_kv.outputs.kv_preview_id }}"
-        
-        # 获取 Workers 域名
-        echo ""
-        echo "🌐 Your FileCodeBox is now deployed!"
-        echo "Visit your Cloudflare Workers dashboard to get the deployment URL."
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          sed -i 's/REPLACE_WITH_YOUR_KV_ID/'"$CF_KV_ID"'/g' wrangler.gen.toml
+          sed -i 's/REPLACE_WITH_YOUR_R2_BUCKET/'"$CF_R2_BUCKET"'/g' wrangler.gen.toml
 
-  # 仅在 PR 时运行的验证作业
-  validate-pr:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    name: Validate Configuration
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+          # optional preview bindings
+          if [ -n "$CF_KV_PREVIEW_ID" ]; then
+            sed -i 's/REPLACE_WITH_YOUR_KV_PREVIEW_ID/'"$CF_KV_PREVIEW_ID"'/g' wrangler.gen.toml
+          fi
+          if [ -n "$CF_R2_PREVIEW_BUCKET" ]; then
+            sed -i 's/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/'"$CF_R2_PREVIEW_BUCKET"'/g' wrangler.gen.toml
+          fi
+          echo "---- wrangler.gen.toml (diff) ----"
+          diff -u wrangler.toml wrangler.gen.toml || true
+          echo "---- wrangler.gen.toml (content) ----"
+          cat wrangler.gen.toml
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
+      # Skipping explicit verify step because we auto-provision when missing
 
-    - name: Validate wrangler.toml
-      run: |
-        echo "🔍 Validating wrangler.toml configuration..."
-        
-        # 检查必要的配置项
-        if grep -q "FILECODEBOX_KV" wrangler.toml; then
-          echo "✅ KV binding found"
-        else
-          echo "❌ KV binding not found"
-          exit 1
-        fi
-        
-        if grep -q "FILECODEBOX_R2" wrangler.toml; then
-          echo "✅ R2 binding found"
-        else
-          echo "❌ R2 binding not found"
-          exit 1
-        fi
-        
-        if grep -q "filecodebox-r2-f6bd1dfe" wrangler.toml; then
-          echo "✅ R2 bucket name configured"
-        else
-          echo "❌ R2 bucket name not configured"
-          exit 1
-        fi
-        
-        echo "✅ Configuration validation passed"
-
-    - name: Check project structure
-      run: |
-        echo "📁 Checking project structure..."
-        
-        required_files=("src/index.js" "package.json" "wrangler.toml")
-        for file in "${required_files[@]}"; do
-          if [[ -f "$file" ]]; then
-            echo "✅ $file exists"
+      - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
+        run: |
+          if [ -n "$PERMANENT_PASSWORD" ]; then
+            echo -n "$PERMANENT_PASSWORD" | wrangler secret put PERMANENT_PASSWORD
           else
-            echo "❌ $file is missing"
-            exit 1
+            echo "PERMANENT_PASSWORD not set in secrets. Skip setting secret."
           fi
-        done
-        
-        echo "✅ Project structure validation passed"
+
+      - name: Deploy with Wrangler
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # 可选：Secrets/Vars 可在 Dashboard 配置，也可在此注入
+        run: |
+          # 组装 --var 参数，仅对已设置的变量注入，避免覆盖 Dashboard 配置
+          if [ -f wrangler.gen.toml ]; then
+            echo "Deploying with wrangler.gen.toml"
+            wrangler deploy --config wrangler.gen.toml
+          else
+            wrangler deploy
+          fi
+
