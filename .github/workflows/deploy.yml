@@ -26,14 +26,30 @@ jobs:
         run: npm i -g wrangler@4
 
       - name: Template wrangler.toml with bindings
+        env:
+          IN_CF_KV_ID: ${{ secrets.CF_KV_ID }}
+          IN_CF_KV_PREVIEW_ID: ${{ secrets.CF_KV_PREVIEW_ID }}
+          IN_CF_R2_BUCKET: ${{ vars.CF_R2_BUCKET }}
+          IN_CF_R2_PREVIEW_BUCKET: ${{ vars.CF_R2_PREVIEW_BUCKET }}
         run: |
-          sed -i 's/"__REPLACE_WITH_YOUR_KV_ID__"/"${{ secrets.CF_KV_ID }}"/g' wrangler.toml
-          sed -i 's/"__REPLACE_WITH_YOUR_KV_PREVIEW_ID__"/"${{ secrets.CF_KV_PREVIEW_ID || secrets.CF_KV_ID }}"/g' wrangler.toml
-          sed -i 's/"__REPLACE_WITH_YOUR_R2_BUCKET__"/"${{ vars.CF_R2_BUCKET }}"/g' wrangler.toml
-          sed -i 's/"__REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET__"/"${{ vars.CF_R2_PREVIEW_BUCKET || vars.CF_R2_BUCKET }}"/g' wrangler.toml
+          set -e
+          KV_ID="$IN_CF_KV_ID"
+          KV_PREVIEW_ID="$IN_CF_KV_PREVIEW_ID"
+          if [ -z "$KV_PREVIEW_ID" ]; then KV_PREVIEW_ID="$KV_ID"; fi
+          R2_BUCKET="$IN_CF_R2_BUCKET"
+          R2_PREVIEW_BUCKET="$IN_CF_R2_PREVIEW_BUCKET"
+          if [ -z "$R2_PREVIEW_BUCKET" ]; then R2_PREVIEW_BUCKET="$R2_BUCKET"; fi
+          if [ -z "$KV_ID" ] || [ -z "$R2_BUCKET" ]; then
+            echo "CF_KV_ID or CF_R2_BUCKET is not set." >&2
+            exit 1
+          fi
+          sed -i "s/\"__REPLACE_WITH_YOUR_KV_ID__\"/\"$KV_ID\"/g" wrangler.toml
+          sed -i "s/\"__REPLACE_WITH_YOUR_KV_PREVIEW_ID__\"/\"$KV_PREVIEW_ID\"/g" wrangler.toml
+          sed -i "s/\"__REPLACE_WITH_YOUR_R2_BUCKET__\"/\"$R2_BUCKET\"/g" wrangler.toml
+          sed -i "s/\"__REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET__\"/\"$R2_PREVIEW_BUCKET\"/g" wrangler.toml
 
       - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
-        if: ${{ secrets.PERMANENT_PASSWORD != '' }}
+        if: ${{ secrets.PERMANENT_PASSWORD }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
