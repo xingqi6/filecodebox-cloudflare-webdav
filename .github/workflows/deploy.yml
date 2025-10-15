@@ -56,7 +56,7 @@ jobs:
           PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
         run: |
           if [ -n "$PERMANENT_PASSWORD" ]; then
-            wrangler secret put PERMANENT_PASSWORD --text "$PERMANENT_PASSWORD"
+            echo -n "$PERMANENT_PASSWORD" | wrangler secret put PERMANENT_PASSWORD
           else
             echo "PERMANENT_PASSWORD not set in secrets. Skip setting secret."
           fi
