@@ -46,62 +46,29 @@ jobs:
           missing=0
           if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then echo "::error::Missing secret CLOUDFLARE_API_TOKEN"; missing=1; fi
           if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"; missing=1; fi
+          if [ -z "${{ secrets.WEBDAV_PASSWORD }}" ]; then echo "::error::Missing secret WEBDAV_PASSWORD"; missing=1; fi
           if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
 
-      - name: Auto-provision KV/R2 resources
+      - name: Auto-provision KV namespace
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -e
           
-          # 临时重命名 wrangler.toml，避免 wrangler 命令验证占位符失败
+          # 临时重命名 wrangler.toml
           mv wrangler.toml wrangler.toml.template
-          
-          # 设置默认的 bucket 名称
-          CF_R2_BUCKET="filecodebox-storage"
-          CF_R2_PREVIEW_BUCKET="filecodebox-storage-preview"
 
-          echo "🔧 开始自动配置 Cloudflare 资源..."
+          echo "🔧 开始自动配置 Cloudflare KV..."
           echo "Account ID: $CLOUDFLARE_ACCOUNT_ID"
 
-          # 创建或检测 R2 存储桶
-          echo ""
-          echo "📦 检查 R2 存储桶..."
-          R2_LIST=$(wrangler r2 bucket list 2>/dev/null || echo "")
-          echo "现有 R2 buckets:"
-          echo "$R2_LIST"
-          
-          # 检查主存储桶（更宽松的匹配）
-          if echo "$R2_LIST" | grep -q "$CF_R2_BUCKET"; then
-            echo "✅ R2 存储桶已存在: $CF_R2_BUCKET"
-          else
-            echo "创建 R2 存储桶: $CF_R2_BUCKET"
-            wrangler r2 bucket create "$CF_R2_BUCKET" 2>&1 || echo "⚠️  可能已存在，继续..."
-          fi
-
-          # 检查预览存储桶
-          if echo "$R2_LIST" | grep -q "$CF_R2_PREVIEW_BUCKET"; then
-            echo "✅ R2 预览存储桶已存在: $CF_R2_PREVIEW_BUCKET"
-          else
-            echo "创建 R2 预览存储桶: $CF_R2_PREVIEW_BUCKET"
-            wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET" 2>&1 || echo "⚠️  可能已存在，继续..."
-          fi
-
           # 创建 KV 命名空间
-          echo ""
           echo "🗄️  检查 KV 命名空间..."
           KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "[]")
           echo "现有 KV namespaces:"
           echo "$KV_LIST"
           
-          # 从 JSON 中提取 FILECODEBOX_KV 的 ID（非预览版）
-          CF_KV_ID=$(echo "$KV_LIST" | grep -A 1 '"title": "FILECODEBOX_KV"' | grep '"id"' | grep -v 'preview' | head -1 | grep -oP '(?<="id": ")[^"]+' || echo "")
-          
-          # 如果上面的方法失败，尝试更简单的方法
-          if [ -z "$CF_KV_ID" ]; then
-            CF_KV_ID=$(echo "$KV_LIST" | grep -B 1 '"title": "FILECODEBOX_KV"' | grep '"id"' | head -1 | sed 's/.*"id": "\([^"]*\)".*/\1/')
-          fi
+          CF_KV_ID=$(echo "$KV_LIST" | grep -B 1 '"title": "FILECODEBOX_KV"' | grep '"id"' | head -1 | sed 's/.*"id": "\([^"]*\)".*/\1/')
           
           if [ -n "$CF_KV_ID" ]; then
             echo "✅ 找到已存在的 KV namespace: $CF_KV_ID"
@@ -109,13 +76,11 @@ jobs:
             echo "创建 KV namespace: FILECODEBOX_KV"
             wrangler kv namespace create FILECODEBOX_KV 2>&1 || echo "⚠️  可能已存在，继续..."
             
-            # 重新获取列表
             sleep 2
             KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "[]")
             CF_KV_ID=$(echo "$KV_LIST" | grep -B 1 '"title": "FILECODEBOX_KV"' | grep '"id"' | head -1 | sed 's/.*"id": "\([^"]*\)".*/\1/')
           fi
 
-          # 从 JSON 中提取预览 KV 的 ID
           CF_KV_PREVIEW_ID=$(echo "$KV_LIST" | grep -B 1 '"title": "FILECODEBOX_KV_preview"' | grep '"id"' | head -1 | sed 's/.*"id": "\([^"]*\)".*/\1/')
           
           if [ -n "$CF_KV_PREVIEW_ID" ]; then
@@ -124,20 +89,15 @@ jobs:
             echo "创建预览 KV namespace: FILECODEBOX_KV_preview"
             wrangler kv namespace create FILECODEBOX_KV --preview 2>&1 || echo "⚠️  可能已存在，继续..."
             
-            # 重新获取列表
             sleep 2
             KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "[]")
             CF_KV_PREVIEW_ID=$(echo "$KV_LIST" | grep -B 1 '"title": "FILECODEBOX_KV_preview"' | grep '"id"' | head -1 | sed 's/.*"id": "\([^"]*\)".*/\1/')
           fi
 
-          # 验证所有 ID 都已获取
           if [ -z "$CF_KV_ID" ] || [ -z "$CF_KV_PREVIEW_ID" ]; then
-            echo ""
             echo "❌ 错误: 无法获取 KV namespace ID"
             echo "KV_ID='$CF_KV_ID'"
             echo "KV_PREVIEW_ID='$CF_KV_PREVIEW_ID'"
-            echo ""
-            echo "完整的 KV 列表:"
             wrangler kv namespace list
             exit 1
           fi
@@ -146,72 +106,50 @@ jobs:
           echo "📋 资源配置完成:"
           echo "  KV ID: $CF_KV_ID"
           echo "  KV Preview ID: $CF_KV_PREVIEW_ID"
-          echo "  R2 Bucket: $CF_R2_BUCKET"
-          echo "  R2 Preview Bucket: $CF_R2_PREVIEW_BUCKET"
 
-          # 导出环境变量供后续步骤使用
           echo "CF_KV_ID=$CF_KV_ID" >> $GITHUB_ENV
           echo "CF_KV_PREVIEW_ID=$CF_KV_PREVIEW_ID" >> $GITHUB_ENV
-          echo "CF_R2_BUCKET=$CF_R2_BUCKET" >> $GITHUB_ENV
-          echo "CF_R2_PREVIEW_BUCKET=$CF_R2_PREVIEW_BUCKET" >> $GITHUB_ENV
           
-          # 恢复模板文件
           mv wrangler.toml.template wrangler.toml
 
       - name: 生成配置文件并替换占位符
         env:
           CF_KV_ID: ${{ env.CF_KV_ID }}
           CF_KV_PREVIEW_ID: ${{ env.CF_KV_PREVIEW_ID }}
-          CF_R2_BUCKET: ${{ env.CF_R2_BUCKET }}
-          CF_R2_PREVIEW_BUCKET: ${{ env.CF_R2_PREVIEW_BUCKET }}
         run: |
           set -e
           
           echo "🔄 正在生成部署配置..."
-          
-          # 复制原始配置
           cp wrangler.toml wrangler.gen.toml
           
-          # 验证必需的环境变量
-          if [ -z "$CF_KV_ID" ]; then
-            echo "❌ 错误: CF_KV_ID 未设置"
-            exit 1
-          fi
-          if [ -z "$CF_KV_PREVIEW_ID" ]; then
-            echo "❌ 错误: CF_KV_PREVIEW_ID 未设置"
-            exit 1
-          fi
-          if [ -z "$CF_R2_BUCKET" ]; then
-            echo "❌ 错误: CF_R2_BUCKET 未设置"
-            exit 1
-          fi
-          if [ -z "$CF_R2_PREVIEW_BUCKET" ]; then
-            echo "❌ 错误: CF_R2_PREVIEW_BUCKET 未设置"
+          if [ -z "$CF_KV_ID" ] || [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo "❌ 错误: KV ID 未设置"
             exit 1
           fi
 
-          # 替换占位符
           sed -i "s/REPLACE_WITH_YOUR_KV_ID/$CF_KV_ID/g" wrangler.gen.toml
           sed -i "s/REPLACE_WITH_YOUR_KV_PREVIEW_ID/$CF_KV_PREVIEW_ID/g" wrangler.gen.toml
-          sed -i "s/REPLACE_WITH_YOUR_R2_BUCKET/$CF_R2_BUCKET/g" wrangler.gen.toml
-          sed -i "s/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/$CF_R2_PREVIEW_BUCKET/g" wrangler.gen.toml
 
           echo ""
-          echo "📄 生成的配置文件 (KV 和 R2 部分):"
+          echo "📄 生成的配置文件 (KV 部分):"
           grep -A 3 "kv_namespaces" wrangler.gen.toml || true
-          grep -A 3 "r2_buckets" wrangler.gen.toml || true
-          
           echo ""
           echo "✅ 配置文件生成完成"
 
-      - name: 设置永久密码（默认 123456）
+      - name: 设置 Cloudflare Secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WEBDAV_PASSWORD: ${{ secrets.WEBDAV_PASSWORD }}
           PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
         run: |
-          # 如果用户设置了 PERMANENT_PASSWORD secret，使用用户的密码
-          # 否则使用默认密码 123456
+          # 设置 WebDAV 密码
+          if [ -n "$WEBDAV_PASSWORD" ]; then
+            echo "🔐 设置 WebDAV 密码"
+            echo -n "$WEBDAV_PASSWORD" | wrangler secret put WEBDAV_PASSWORD --config wrangler.gen.toml
+          fi
+          
+          # 设置永久密码
           if [ -n "$PERMANENT_PASSWORD" ]; then
             echo "🔐 使用自定义永久密码"
             echo -n "$PERMANENT_PASSWORD" | wrangler secret put PERMANENT_PASSWORD --config wrangler.gen.toml
@@ -219,7 +157,8 @@ jobs:
             echo "🔐 使用默认永久密码: 123456"
             echo -n "123456" | wrangler secret put PERMANENT_PASSWORD --config wrangler.gen.toml
           fi
-          echo "✅ 永久密码已设置"
+          
+          echo "✅ Secrets 已设置"
 
       - name: 部署到 Cloudflare Workers
         env:
@@ -237,5 +176,5 @@ jobs:
           
           echo ""
           echo "✅ 部署成功！"
-          echo "📦 您的文件快递柜已部署到 Cloudflare Workers"
+          echo "📦 您的文件快递柜已部署到 Cloudflare Workers（使用 WebDAV 存储）"
           echo "🔑 永久保存功能密码: 123456 (可通过 PERMANENT_PASSWORD secret 自定义)"
