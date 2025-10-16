@@ -116,6 +116,8 @@ jobs:
         env:
           CF_KV_ID: ${{ env.CF_KV_ID }}
           CF_KV_PREVIEW_ID: ${{ env.CF_KV_PREVIEW_ID }}
+          WEBDAV_URL: ${{ vars.WEBDAV_URL || secrets.WEBDAV_URL }}
+          WEBDAV_USERNAME: ${{ vars.WEBDAV_USERNAME || secrets.WEBDAV_USERNAME }}
         run: |
           set -e
           
@@ -129,6 +131,8 @@ jobs:
 
           sed -i "s/REPLACE_WITH_YOUR_KV_ID/$CF_KV_ID/g" wrangler.gen.toml
           sed -i "s/REPLACE_WITH_YOUR_KV_PREVIEW_ID/$CF_KV_PREVIEW_ID/g" wrangler.gen.toml
+          sed -i "s|REPLACE_WITH_WEBDAV_URL|$WEBDAV_URL|g" wrangler.gen.toml
+          sed -i "s/REPLACE_WITH_WEBDAV_USERNAME/$WEBDAV_USERNAME/g" wrangler.gen.toml
 
           echo ""
           echo "📄 生成的配置文件 (KV 部分):"
