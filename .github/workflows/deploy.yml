@@ -55,6 +55,9 @@ jobs:
         run: |
           set -e
           
+          # 临时重命名 wrangler.toml，避免 wrangler 命令验证占位符失败
+          mv wrangler.toml wrangler.toml.template
+          
           # 设置默认的 bucket 名称
           CF_R2_BUCKET="filecodebox-storage"
           CF_R2_PREVIEW_BUCKET="filecodebox-storage-preview"
@@ -145,6 +148,9 @@ jobs:
           echo "CF_KV_PREVIEW_ID=$CF_KV_PREVIEW_ID" >> $GITHUB_ENV
           echo "CF_R2_BUCKET=$CF_R2_BUCKET" >> $GITHUB_ENV
           echo "CF_R2_PREVIEW_BUCKET=$CF_R2_PREVIEW_BUCKET" >> $GITHUB_ENV
+          
+          # 恢复模板文件
+          mv wrangler.toml.template wrangler.toml
 
       - name: 生成配置文件并替换占位符
         env:
@@ -185,8 +191,8 @@ jobs:
           sed -i "s/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/$CF_R2_PREVIEW_BUCKET/g" wrangler.gen.toml
 
           echo ""
-          echo "📄 配置文件对比:"
-          diff -u wrangler.toml wrangler.gen.toml || true
+          echo "📄 生成的配置文件内容:"
+          cat wrangler.gen.toml
           
           echo ""
           echo "✅ 配置文件生成完成"
