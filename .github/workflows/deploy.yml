@@ -66,72 +66,107 @@ jobs:
           echo "Account ID: $CLOUDFLARE_ACCOUNT_ID"
 
           # 创建或检测 R2 存储桶
+          echo ""
           echo "📦 检查 R2 存储桶..."
-          if ! wrangler r2 bucket list 2>/dev/null | grep -q "^$CF_R2_BUCKET"; then
-            echo "创建 R2 存储桶: $CF_R2_BUCKET"
-            wrangler r2 bucket create "$CF_R2_BUCKET"
-          else
+          echo "列出现有 R2 buckets:"
+          R2_LIST=$(wrangler r2 bucket list 2>/dev/null || echo "")
+          echo "$R2_LIST"
+          
+          # 检查主存储桶
+          if echo "$R2_LIST" | grep -qw "$CF_R2_BUCKET"; then
             echo "✅ R2 存储桶已存在: $CF_R2_BUCKET"
+          else
+            echo "创建 R2 存储桶: $CF_R2_BUCKET"
+            if wrangler r2 bucket create "$CF_R2_BUCKET" 2>&1; then
+              echo "✅ R2 存储桶创建成功"
+            else
+              echo "⚠️  创建失败，可能已存在，继续执行..."
+            fi
           fi
 
-          if ! wrangler r2 bucket list 2>/dev/null | grep -q "^$CF_R2_PREVIEW_BUCKET"; then
-            echo "创建 R2 预览存储桶: $CF_R2_PREVIEW_BUCKET"
-            wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET"
-          else
+          # 检查预览存储桶
+          if echo "$R2_LIST" | grep -qw "$CF_R2_PREVIEW_BUCKET"; then
             echo "✅ R2 预览存储桶已存在: $CF_R2_PREVIEW_BUCKET"
+          else
+            echo "创建 R2 预览存储桶: $CF_R2_PREVIEW_BUCKET"
+            if wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET" 2>&1; then
+              echo "✅ R2 预览存储桶创建成功"
+            else
+              echo "⚠️  创建失败，可能已存在，继续执行..."
+            fi
           fi
 
           # 创建 KV 命名空间
+          echo ""
           echo "🗄️  检查 KV 命名空间..."
-          
-          # 获取 KV namespace 列表并提取 ID
+          echo "列出现有 KV namespaces:"
           KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "")
+          echo "$KV_LIST"
           
           # 查找非预览的 FILECODEBOX_KV
           CF_KV_ID=$(echo "$KV_LIST" | grep "FILECODEBOX_KV" | grep -v "preview" | grep -oP '(?<=id = ")[^"]+' | head -1 || echo "")
           
-          if [ -z "$CF_KV_ID" ]; then
+          if [ -n "$CF_KV_ID" ]; then
+            echo "✅ 找到已存在的 KV namespace: $CF_KV_ID"
+          else
             echo "创建 KV namespace: FILECODEBOX_KV"
-            KV_OUTPUT=$(wrangler kv namespace create FILECODEBOX_KV 2>&1)
+            KV_OUTPUT=$(wrangler kv namespace create FILECODEBOX_KV 2>&1 || echo "")
             echo "$KV_OUTPUT"
-            CF_KV_ID=$(echo "$KV_OUTPUT" | grep -oP '(?<=id = ")[^"]+' | head -1)
             
+            # 提取 ID
+            CF_KV_ID=$(echo "$KV_OUTPUT" | grep -oP '(?<=id = ")[^"]+' | head -1)
             if [ -z "$CF_KV_ID" ]; then
-              # 尝试另一种提取方式
               CF_KV_ID=$(echo "$KV_OUTPUT" | grep -oP '[a-f0-9]{32}' | head -1)
             fi
             
-            echo "✅ 已创建 KV namespace: $CF_KV_ID"
-          else
-            echo "✅ 找到已存在的 KV namespace: $CF_KV_ID"
+            # 如果创建失败，可能已存在，重新获取列表
+            if [ -z "$CF_KV_ID" ]; then
+              echo "⚠️  从输出提取失败，重新获取 KV 列表..."
+              KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "")
+              CF_KV_ID=$(echo "$KV_LIST" | grep "FILECODEBOX_KV" | grep -v "preview" | grep -oP '(?<=id = ")[^"]+' | head -1 || echo "")
+            fi
+            
+            if [ -n "$CF_KV_ID" ]; then
+              echo "✅ KV namespace ID: $CF_KV_ID"
+            fi
           fi
 
           # 创建预览 KV namespace
           CF_KV_PREVIEW_ID=$(echo "$KV_LIST" | grep "FILECODEBOX_KV" | grep "preview" | grep -oP '(?<=id = ")[^"]+' | head -1 || echo "")
           
-          if [ -z "$CF_KV_PREVIEW_ID" ]; then
+          if [ -n "$CF_KV_PREVIEW_ID" ]; then
+            echo "✅ 找到已存在的预览 KV namespace: $CF_KV_PREVIEW_ID"
+          else
             echo "创建预览 KV namespace: FILECODEBOX_KV (preview)"
-            KV_PREVIEW_OUTPUT=$(wrangler kv namespace create FILECODEBOX_KV --preview 2>&1)
+            KV_PREVIEW_OUTPUT=$(wrangler kv namespace create FILECODEBOX_KV --preview 2>&1 || echo "")
             echo "$KV_PREVIEW_OUTPUT"
-            CF_KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -oP '(?<=id = ")[^"]+' | head -1)
             
+            # 提取 ID
+            CF_KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -oP '(?<=id = ")[^"]+' | head -1)
             if [ -z "$CF_KV_PREVIEW_ID" ]; then
-              # 尝试另一种提取方式
               CF_KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -oP '[a-f0-9]{32}' | head -1)
             fi
             
-            echo "✅ 已创建预览 KV namespace: $CF_KV_PREVIEW_ID"
-          else
-            echo "✅ 找到已存在的预览 KV namespace: $CF_KV_PREVIEW_ID"
+            # 如果创建失败，可能已存在，重新获取列表
+            if [ -z "$CF_KV_PREVIEW_ID" ]; then
+              echo "⚠️  从输出提取失败，重新获取 KV 列表..."
+              KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "")
+              CF_KV_PREVIEW_ID=$(echo "$KV_LIST" | grep "FILECODEBOX_KV" | grep "preview" | grep -oP '(?<=id = ")[^"]+' | head -1 || echo "")
+            fi
+            
+            if [ -n "$CF_KV_PREVIEW_ID" ]; then
+              echo "✅ 预览 KV namespace ID: $CF_KV_PREVIEW_ID"
+            fi
           fi
 
           # 验证所有 ID 都已获取
           if [ -z "$CF_KV_ID" ] || [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo ""
             echo "❌ 错误: 无法获取 KV namespace ID"
             echo "KV_ID=$CF_KV_ID"
             echo "KV_PREVIEW_ID=$CF_KV_PREVIEW_ID"
             echo ""
-            echo "尝试重新列出所有 KV namespaces..."
+            echo "完整的 KV 列表:"
             wrangler kv namespace list
             exit 1
           fi
