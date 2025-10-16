@@ -67,6 +67,26 @@ jobs:
           echo "KV_ID(in): ${CF_KV_ID:-<empty>}  KV_PREVIEW_ID(in): ${CF_KV_PREVIEW_ID:-<empty>}"
           echo "R2_BUCKET(in): $CF_R2_BUCKET  R2_PREVIEW_BUCKET(in): $CF_R2_PREVIEW_BUCKET"
 
+          # Try to reuse existing KV namespaces to avoid duplication
+          if [ -z "$CF_KV_ID" ]; then
+            echo "Looking up existing KV namespace with title 'FILECODEBOX_KV'..."
+            CF_KV_ID=$(wrangler kv namespace list --json | node -e '
+              let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+                try{const a=JSON.parse(s);const n=a.find(x=>x.title==="FILECODEBOX_KV");if(n) process.stdout.write(n.id);}catch(e){}
+              })'
+            ) || true
+            if [ -n "$CF_KV_ID" ]; then echo "Found KV: $CF_KV_ID"; fi
+          fi
+          if [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo "Looking up existing KV PREVIEW namespace with title 'FILECODEBOX_KV (Preview)'..."
+            CF_KV_PREVIEW_ID=$(wrangler kv namespace list --json | node -e '
+              let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+                try{const a=JSON.parse(s);const n=a.find(x=>x.title==="FILECODEBOX_KV (Preview)");if(n) process.stdout.write(n.id);}catch(e){}
+              })'
+            ) || true
+            if [ -n "$CF_KV_PREVIEW_ID" ]; then echo "Found KV Preview: $CF_KV_PREVIEW_ID"; fi
+          fi
+
           # Create R2 buckets if not exist
           if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_BUCKET$"; then
             echo "R2 bucket '$CF_R2_BUCKET' not found. Creating..."
@@ -110,22 +130,24 @@ jobs:
         run: |
           cp wrangler.toml wrangler.gen.toml
           set -e
-          echo "Filling placeholders from Secrets/Variables..."
+          echo "Injecting resolved IDs and bucket names into wrangler.gen.toml..."
           required_missing=0
-          if [ -z "$CF_KV_ID" ]; then echo "::error::Missing CF_KV_ID (Secret or Variable)"; required_missing=1; fi
-          if [ -z "$CF_R2_BUCKET" ]; then echo "::error::Missing CF_R2_BUCKET (Secret or Variable)"; required_missing=1; fi
-          if [ $required_missing -eq 1 ]; then echo "Missing required repository variables. Please add them in Settings → Secrets and variables → Actions."; exit 1; fi
+          if [ -z "$CF_KV_ID" ]; then echo "::error::Missing CF_KV_ID (autoprovision failed?)"; required_missing=1; fi
+          if [ -z "$CF_R2_BUCKET" ]; then echo "::error::Missing CF_R2_BUCKET (autoprovision failed?)"; required_missing=1; fi
+          if [ $required_missing -eq 1 ]; then echo "Required values missing. Please check previous step logs."; exit 1; fi
 
-          sed -i 's/REPLACE_WITH_YOUR_KV_ID/'"$CF_KV_ID"'/g' wrangler.gen.toml
-          sed -i 's/REPLACE_WITH_YOUR_R2_BUCKET/'"$CF_R2_BUCKET"'/g' wrangler.gen.toml
-
-          # optional preview bindings
+          # Update KV namespace IDs
+          sed -i -E 's/^(\s*)id\s*=\s*"[^"]*"/\1id = "'"$CF_KV_ID"'"/' wrangler.gen.toml
           if [ -n "$CF_KV_PREVIEW_ID" ]; then
-            sed -i 's/REPLACE_WITH_YOUR_KV_PREVIEW_ID/'"$CF_KV_PREVIEW_ID"'/g' wrangler.gen.toml
+            sed -i -E 's/^(\s*)preview_id\s*=\s*"[^"]*"/\1preview_id = "'"$CF_KV_PREVIEW_ID"'"/' wrangler.gen.toml
           fi
+
+          # Update R2 bucket names
+          sed -i -E 's/^(\s*)bucket_name\s*=\s*"[^"]*"/\1bucket_name = "'"$CF_R2_BUCKET"'"/' wrangler.gen.toml
           if [ -n "$CF_R2_PREVIEW_BUCKET" ]; then
-            sed -i 's/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/'"$CF_R2_PREVIEW_BUCKET"'/g' wrangler.gen.toml
+            sed -i -E 's/^(\s*)preview_bucket_name\s*=\s*"[^"]*"/\1preview_bucket_name = "'"$CF_R2_PREVIEW_BUCKET"'"/' wrangler.gen.toml
           fi
+
           echo "---- wrangler.gen.toml (diff) ----"
           diff -u wrangler.toml wrangler.gen.toml || true
           echo "---- wrangler.gen.toml (content) ----"
