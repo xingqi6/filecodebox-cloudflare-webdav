@@ -38,7 +38,6 @@ jobs:
       - name: Install Wrangler
         run: npm i -g wrangler@4
 
-      # 回退到稳定：不再模板替换 wrangler.toml（使用仓库内已配置的绑定）
       - name: Show Wrangler version
         run: wrangler --version
 
@@ -49,113 +48,181 @@ jobs:
           if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then echo "::error::Missing secret CLOUDFLARE_ACCOUNT_ID"; missing=1; fi
           if [ $missing -eq 1 ]; then echo "Required secrets are missing. Configure them in Repository Settings → Secrets and variables → Actions."; exit 1; fi
 
-      - name: Auto-provision KV/R2 if missing (names can be customized via Variables)
+      - name: Auto-provision KV/R2 resources
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_KV_ID: ${{ secrets.CF_KV_ID || vars.CF_KV_ID }}
-          CF_KV_PREVIEW_ID: ${{ secrets.CF_KV_PREVIEW_ID || vars.CF_KV_PREVIEW_ID }}
-          CF_R2_BUCKET: ${{ secrets.CF_R2_BUCKET || vars.CF_R2_BUCKET }}
-          CF_R2_PREVIEW_BUCKET: ${{ secrets.CF_R2_PREVIEW_BUCKET || vars.CF_R2_PREVIEW_BUCKET }}
         run: |
           set -e
-          # Defaults when not provided
-          : "${CF_R2_BUCKET:=filecodebox-storage}"
-          : "${CF_R2_PREVIEW_BUCKET:=filecodebox-storage-preview}"
+          
+          # 设置默认的 bucket 名称
+          CF_R2_BUCKET="filecodebox-storage"
+          CF_R2_PREVIEW_BUCKET="filecodebox-storage-preview"
 
-          echo "Account: $CLOUDFLARE_ACCOUNT_ID"
-          echo "KV_ID(in): ${CF_KV_ID:-<empty>}  KV_PREVIEW_ID(in): ${CF_KV_PREVIEW_ID:-<empty>}"
-          echo "R2_BUCKET(in): $CF_R2_BUCKET  R2_PREVIEW_BUCKET(in): $CF_R2_PREVIEW_BUCKET"
+          echo "🔧 开始自动配置 Cloudflare 资源..."
+          echo "Account ID: $CLOUDFLARE_ACCOUNT_ID"
 
-          # Create R2 buckets if not exist
-          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_BUCKET$"; then
-            echo "R2 bucket '$CF_R2_BUCKET' not found. Creating..."
+          # 创建或检测 R2 存储桶
+          echo "📦 检查 R2 存储桶..."
+          if ! wrangler r2 bucket list 2>/dev/null | grep -q "^$CF_R2_BUCKET"; then
+            echo "创建 R2 存储桶: $CF_R2_BUCKET"
             wrangler r2 bucket create "$CF_R2_BUCKET"
           else
-            echo "R2 bucket '$CF_R2_BUCKET' exists."
+            echo "✅ R2 存储桶已存在: $CF_R2_BUCKET"
           fi
 
-          if ! wrangler r2 bucket list | awk '{print $1}' | grep -q "^$CF_R2_PREVIEW_BUCKET$"; then
-            echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' not found. Creating..."
+          if ! wrangler r2 bucket list 2>/dev/null | grep -q "^$CF_R2_PREVIEW_BUCKET"; then
+            echo "创建 R2 预览存储桶: $CF_R2_PREVIEW_BUCKET"
             wrangler r2 bucket create "$CF_R2_PREVIEW_BUCKET"
           else
-            echo "R2 preview bucket '$CF_R2_PREVIEW_BUCKET' exists."
+            echo "✅ R2 预览存储桶已存在: $CF_R2_PREVIEW_BUCKET"
           fi
 
-          # Create KV namespaces if IDs not provided
+          # 创建 KV 命名空间
+          echo "🗄️  检查 KV 命名空间..."
+          
+          # 获取 KV namespace 列表并提取 ID
+          KV_LIST=$(wrangler kv namespace list 2>/dev/null || echo "")
+          
+          # 查找非预览的 FILECODEBOX_KV
+          CF_KV_ID=$(echo "$KV_LIST" | grep "FILECODEBOX_KV" | grep -v "preview" | grep -oP '(?<=id = ")[^"]+' | head -1 || echo "")
+          
           if [ -z "$CF_KV_ID" ]; then
-            echo "KV id missing. Creating KV namespace 'FILECODEBOX_KV'..."
-            CF_KV_ID=$(wrangler kv namespace create FILECODEBOX_KV --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            echo "创建 KV namespace: FILECODEBOX_KV"
+            KV_OUTPUT=$(wrangler kv namespace create FILECODEBOX_KV 2>&1)
+            echo "$KV_OUTPUT"
+            CF_KV_ID=$(echo "$KV_OUTPUT" | grep -oP '(?<=id = ")[^"]+' | head -1)
+            
+            if [ -z "$CF_KV_ID" ]; then
+              # 尝试另一种提取方式
+              CF_KV_ID=$(echo "$KV_OUTPUT" | grep -oP '[a-f0-9]{32}' | head -1)
+            fi
+            
+            echo "✅ 已创建 KV namespace: $CF_KV_ID"
+          else
+            echo "✅ 找到已存在的 KV namespace: $CF_KV_ID"
           fi
+
+          # 创建预览 KV namespace
+          CF_KV_PREVIEW_ID=$(echo "$KV_LIST" | grep "FILECODEBOX_KV" | grep "preview" | grep -oP '(?<=id = ")[^"]+' | head -1 || echo "")
+          
           if [ -z "$CF_KV_PREVIEW_ID" ]; then
-            echo "KV preview id missing. Creating preview KV namespace 'FILECODEBOX_KV'..."
-            CF_KV_PREVIEW_ID=$(wrangler kv namespace create FILECODEBOX_KV --preview --json | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+            echo "创建预览 KV namespace: FILECODEBOX_KV (preview)"
+            KV_PREVIEW_OUTPUT=$(wrangler kv namespace create FILECODEBOX_KV --preview 2>&1)
+            echo "$KV_PREVIEW_OUTPUT"
+            CF_KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -oP '(?<=id = ")[^"]+' | head -1)
+            
+            if [ -z "$CF_KV_PREVIEW_ID" ]; then
+              # 尝试另一种提取方式
+              CF_KV_PREVIEW_ID=$(echo "$KV_PREVIEW_OUTPUT" | grep -oP '[a-f0-9]{32}' | head -1)
+            fi
+            
+            echo "✅ 已创建预览 KV namespace: $CF_KV_PREVIEW_ID"
+          else
+            echo "✅ 找到已存在的预览 KV namespace: $CF_KV_PREVIEW_ID"
           fi
 
-          echo "Provisioned IDs: KV_ID=$CF_KV_ID  KV_PREVIEW_ID=$CF_KV_PREVIEW_ID"
-          echo "R2: bucket=$CF_R2_BUCKET preview_bucket=$CF_R2_PREVIEW_BUCKET"
+          # 验证所有 ID 都已获取
+          if [ -z "$CF_KV_ID" ] || [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo "❌ 错误: 无法获取 KV namespace ID"
+            echo "KV_ID=$CF_KV_ID"
+            echo "KV_PREVIEW_ID=$CF_KV_PREVIEW_ID"
+            echo ""
+            echo "尝试重新列出所有 KV namespaces..."
+            wrangler kv namespace list
+            exit 1
+          fi
 
-          # Export for next steps
+          echo ""
+          echo "📋 资源配置完成:"
+          echo "  KV ID: $CF_KV_ID"
+          echo "  KV Preview ID: $CF_KV_PREVIEW_ID"
+          echo "  R2 Bucket: $CF_R2_BUCKET"
+          echo "  R2 Preview Bucket: $CF_R2_PREVIEW_BUCKET"
+
+          # 导出环境变量供后续步骤使用
           echo "CF_KV_ID=$CF_KV_ID" >> $GITHUB_ENV
           echo "CF_KV_PREVIEW_ID=$CF_KV_PREVIEW_ID" >> $GITHUB_ENV
           echo "CF_R2_BUCKET=$CF_R2_BUCKET" >> $GITHUB_ENV
           echo "CF_R2_PREVIEW_BUCKET=$CF_R2_PREVIEW_BUCKET" >> $GITHUB_ENV
 
-      - name: Template wrangler.toml with resolved values
+      - name: 生成配置文件并替换占位符
         env:
           CF_KV_ID: ${{ env.CF_KV_ID }}
           CF_KV_PREVIEW_ID: ${{ env.CF_KV_PREVIEW_ID }}
           CF_R2_BUCKET: ${{ env.CF_R2_BUCKET }}
           CF_R2_PREVIEW_BUCKET: ${{ env.CF_R2_PREVIEW_BUCKET }}
         run: |
-          cp wrangler.toml wrangler.gen.toml
           set -e
-          echo "Filling placeholders from Secrets/Variables..."
-          required_missing=0
-          if [ -z "$CF_KV_ID" ]; then echo "::error::Missing CF_KV_ID (Secret or Variable)"; required_missing=1; fi
-          if [ -z "$CF_R2_BUCKET" ]; then echo "::error::Missing CF_R2_BUCKET (Secret or Variable)"; required_missing=1; fi
-          if [ $required_missing -eq 1 ]; then echo "Missing required repository variables. Please add them in Settings → Secrets and variables → Actions."; exit 1; fi
-
-          sed -i 's/REPLACE_WITH_YOUR_KV_ID/'"$CF_KV_ID"'/g' wrangler.gen.toml
-          sed -i 's/REPLACE_WITH_YOUR_R2_BUCKET/'"$CF_R2_BUCKET"'/g' wrangler.gen.toml
-
-          # optional preview bindings
-          if [ -n "$CF_KV_PREVIEW_ID" ]; then
-            sed -i 's/REPLACE_WITH_YOUR_KV_PREVIEW_ID/'"$CF_KV_PREVIEW_ID"'/g' wrangler.gen.toml
+          
+          echo "🔄 正在生成部署配置..."
+          
+          # 复制原始配置
+          cp wrangler.toml wrangler.gen.toml
+          
+          # 验证必需的环境变量
+          if [ -z "$CF_KV_ID" ]; then
+            echo "❌ 错误: CF_KV_ID 未设置"
+            exit 1
           fi
-          if [ -n "$CF_R2_PREVIEW_BUCKET" ]; then
-            sed -i 's/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/'"$CF_R2_PREVIEW_BUCKET"'/g' wrangler.gen.toml
+          if [ -z "$CF_KV_PREVIEW_ID" ]; then
+            echo "❌ 错误: CF_KV_PREVIEW_ID 未设置"
+            exit 1
           fi
-          echo "---- wrangler.gen.toml (diff) ----"
+          if [ -z "$CF_R2_BUCKET" ]; then
+            echo "❌ 错误: CF_R2_BUCKET 未设置"
+            exit 1
+          fi
+          if [ -z "$CF_R2_PREVIEW_BUCKET" ]; then
+            echo "❌ 错误: CF_R2_PREVIEW_BUCKET 未设置"
+            exit 1
+          fi
+
+          # 替换占位符
+          sed -i "s/REPLACE_WITH_YOUR_KV_ID/$CF_KV_ID/g" wrangler.gen.toml
+          sed -i "s/REPLACE_WITH_YOUR_KV_PREVIEW_ID/$CF_KV_PREVIEW_ID/g" wrangler.gen.toml
+          sed -i "s/REPLACE_WITH_YOUR_R2_BUCKET/$CF_R2_BUCKET/g" wrangler.gen.toml
+          sed -i "s/REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET/$CF_R2_PREVIEW_BUCKET/g" wrangler.gen.toml
+
+          echo ""
+          echo "📄 配置文件对比:"
           diff -u wrangler.toml wrangler.gen.toml || true
-          echo "---- wrangler.gen.toml (content) ----"
-          cat wrangler.gen.toml
+          
+          echo ""
+          echo "✅ 配置文件生成完成"
 
-      # Skipping explicit verify step because we auto-provision when missing
-
-      - name: Set Cloudflare Secret PERMANENT_PASSWORD (optional)
+      - name: 设置永久密码（默认 123456）
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PERMANENT_PASSWORD: ${{ secrets.PERMANENT_PASSWORD }}
         run: |
+          # 如果用户设置了 PERMANENT_PASSWORD secret，使用用户的密码
+          # 否则使用默认密码 123456
           if [ -n "$PERMANENT_PASSWORD" ]; then
-            echo -n "$PERMANENT_PASSWORD" | wrangler secret put PERMANENT_PASSWORD
+            echo "🔐 使用自定义永久密码"
+            echo -n "$PERMANENT_PASSWORD" | wrangler secret put PERMANENT_PASSWORD --config wrangler.gen.toml
           else
-            echo "PERMANENT_PASSWORD not set in secrets. Skip setting secret."
+            echo "🔐 使用默认永久密码: 123456"
+            echo -n "123456" | wrangler secret put PERMANENT_PASSWORD --config wrangler.gen.toml
           fi
+          echo "✅ 永久密码已设置"
 
-      - name: Deploy with Wrangler
+      - name: 部署到 Cloudflare Workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # 可选：Secrets/Vars 可在 Dashboard 配置，也可在此注入
         run: |
-          # 组装 --var 参数，仅对已设置的变量注入，避免覆盖 Dashboard 配置
+          echo "🚀 开始部署到 Cloudflare Workers..."
+          
           if [ -f wrangler.gen.toml ]; then
-            echo "Deploying with wrangler.gen.toml"
             wrangler deploy --config wrangler.gen.toml
           else
-            wrangler deploy
+            echo "❌ 错误: wrangler.gen.toml 不存在"
+            exit 1
           fi
-
+          
+          echo ""
+          echo "✅ 部署成功！"
+          echo "📦 您的文件快递柜已部署到 Cloudflare Workers"
+          echo "🔑 永久保存功能密码: 123456 (可通过 PERMANENT_PASSWORD secret 自定义)"
