@@ -26,7 +26,15 @@ function getWebDAVAuth(env) {
 }
 
 async function webdavUpload(env, fileName, fileStream) {
-  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  let webdavUrl = env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/';
+  // 确保使用 HTTPS
+  if (webdavUrl.startsWith('http://')) {
+    webdavUrl = webdavUrl.replace('http://', 'https://');
+  }
+  if (!webdavUrl.startsWith('https://')) {
+    webdavUrl = 'https://' + webdavUrl;
+  }
+  webdavUrl = webdavUrl.replace(/\/$/, '');
   const filePath = `${webdavUrl}/filecodebox/${fileName}`;
   
   try {
@@ -50,7 +58,15 @@ async function webdavUpload(env, fileName, fileStream) {
 }
 
 async function webdavDownload(env, fileName) {
-  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  let webdavUrl = env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/';
+  // 确保使用 HTTPS
+  if (webdavUrl.startsWith('http://')) {
+    webdavUrl = webdavUrl.replace('http://', 'https://');
+  }
+  if (!webdavUrl.startsWith('https://')) {
+    webdavUrl = 'https://' + webdavUrl;
+  }
+  webdavUrl = webdavUrl.replace(/\/$/, '');
   const filePath = `${webdavUrl}/filecodebox/${fileName}`;
   
   try {
@@ -73,7 +89,15 @@ async function webdavDownload(env, fileName) {
 }
 
 async function webdavDelete(env, fileName) {
-  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  let webdavUrl = env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/';
+  // 确保使用 HTTPS
+  if (webdavUrl.startsWith('http://')) {
+    webdavUrl = webdavUrl.replace('http://', 'https://');
+  }
+  if (!webdavUrl.startsWith('https://')) {
+    webdavUrl = 'https://' + webdavUrl;
+  }
+  webdavUrl = webdavUrl.replace(/\/$/, '');
   const filePath = `${webdavUrl}/filecodebox/${fileName}`;
   
   try {
