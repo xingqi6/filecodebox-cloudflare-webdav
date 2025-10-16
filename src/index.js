@@ -27,17 +27,35 @@ function getWebDAVAuth(env) {
 
 async function webdavUpload(env, fileName, fileStream) {
   let webdavUrl = env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/';
+  
   // 确保使用 HTTPS
   if (webdavUrl.startsWith('http://')) {
     webdavUrl = webdavUrl.replace('http://', 'https://');
   }
-  if (!webdavUrl.startsWith('https://')) {
+  if (!webdavUrl.startsWith('https://') && !webdavUrl.startsWith('http://')) {
     webdavUrl = 'https://' + webdavUrl;
   }
   webdavUrl = webdavUrl.replace(/\/$/, '');
-  const filePath = `${webdavUrl}/filecodebox/${fileName}`;
+  
+  const folderPath = `${webdavUrl}/filecodebox`;
+  const filePath = `${folderPath}/${fileName}`;
   
   try {
+    // 先尝试创建文件夹（如果不存在）
+    try {
+      await fetch(folderPath, {
+        method: 'MKCOL',
+        headers: {
+          'Authorization': getWebDAVAuth(env),
+        }
+      });
+      console.log(`📁 Created folder: filecodebox`);
+    } catch (folderError) {
+      // 文件夹可能已存在，忽略错误
+      console.log(`📁 Folder may already exist: filecodebox`);
+    }
+    
+    // 上传文件
     const response = await fetch(filePath, {
       method: 'PUT',
       headers: {
@@ -47,16 +65,18 @@ async function webdavUpload(env, fileName, fileStream) {
     });
     
     if (!response.ok) {
-      throw new Error(`WebDAV upload failed: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`❌ WebDAV upload failed: ${response.status} ${response.statusText}`, errorText);
+      throw new Error(`WebDAV upload failed: ${response.status} - ${errorText}`);
     }
     
+    console.log(`✅ File uploaded successfully to WebDAV: ${filePath}`);
     return filePath;
   } catch (error) {
-    console.error('WebDAV upload error:', error);
+    console.error('❌ WebDAV upload error:', error);
     throw error;
   }
 }
-
 async function webdavDownload(env, fileName) {
   let webdavUrl = env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/';
   // 确保使用 HTTPS
