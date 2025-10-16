@@ -25,7 +25,7 @@ function getWebDAVAuth(env) {
   return 'Basic ' + btoa(username + ':' + password);
 }
 
-async function webdavUpload(env, fileName, fileData) {
+async function webdavUpload(env, fileName, fileBuffer) {
   let webdavUrl = env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/';
   
   // 确保使用 HTTPS
@@ -40,33 +40,7 @@ async function webdavUpload(env, fileName, fileData) {
   const folderPath = `${webdavUrl}/filecodebox`;
   const filePath = `${folderPath}/${fileName}`;
   
-  console.log(`📤 Uploading to WebDAV: ${filePath}`);
-  
   try {
-    // 将流转换为 ArrayBuffer
-    let fileBuffer;
-    if (fileData instanceof ReadableStream) {
-      const reader = fileData.getReader();
-      const chunks = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      // 合并所有 chunks
-      const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-      fileBuffer = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        fileBuffer.set(chunk, offset);
-        offset += chunk.length;
-      }
-    } else {
-      fileBuffer = fileData;
-    }
-    
-    console.log(`📦 File size: ${fileBuffer.length} bytes`);
-    
     // 先检查/创建文件夹
     const folderCheck = await fetch(folderPath, {
       method: 'PROPFIND',
@@ -77,7 +51,6 @@ async function webdavUpload(env, fileName, fileData) {
     });
     
     if (folderCheck.status === 404) {
-      console.log(`📁 Creating folder: filecodebox`);
       await fetch(folderPath, {
         method: 'MKCOL',
         headers: {
@@ -98,15 +71,12 @@ async function webdavUpload(env, fileName, fileData) {
     
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`❌ WebDAV upload failed: ${response.status} ${response.statusText}`);
-      console.error(`❌ Error: ${errorText.substring(0, 500)}`);
-      throw new Error(`WebDAV upload failed: ${response.status}`);
+      throw new Error(`WebDAV upload failed: ${response.status} - ${errorText.substring(0, 200)}`);
     }
     
-    console.log(`✅ File uploaded successfully: ${fileName}`);
     return filePath;
   } catch (error) {
-    console.error('❌ WebDAV upload error:', error);
+    console.error('WebDAV upload error:', error);
     throw error;
   }
 }
@@ -2176,12 +2146,14 @@ app.post('/api/share/file', async (c) => {
     console.log(`📁 Starting file upload: ${code}, file: ${fileName}, size: ${file.size}, expires: ${expiredAt ? expiredAt.toISOString() : 'never'}`);
     
     try {
-  await webdavUpload(c.env, uuidFileName, file.stream());
+  // 先将文件转换为 ArrayBuffer
+  const fileBuffer = await file.arrayBuffer();
+  await webdavUpload(c.env, uuidFileName, fileBuffer);
   
   console.log(`✅ File uploaded to WebDAV: ${uuidFileName}`);
 } catch (webdavError) {
   console.error('❌ WebDAV upload failed:', webdavError);
-  return c.json({ code: 500, detail: 'WebDAV 存储上传失败' }, 500);
+  return c.json({ code: 500, detail: 'WebDAV 存储上传失败: ' + webdavError.message }, 500);
 }
     
     // 规范化文件名：prefix = 基名（不含扩展名），suffix = 扩展名（含点）
