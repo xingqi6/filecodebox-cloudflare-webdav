@@ -95,6 +95,52 @@ async function webdavDelete(env, fileName) {
   }
 }
 
+async function webdavDownload(env, fileName) {
+  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  const filePath = `${webdavUrl}/filecodebox/${fileName}`;
+  
+  try {
+    const response = await fetch(filePath, {
+      method: 'GET',
+      headers: {
+        'Authorization': getWebDAVAuth(env),
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`WebDAV download failed: ${response.status}`);
+    }
+    
+    return response;
+  } catch (error) {
+    console.error('WebDAV download error:', error);
+    throw error;
+  }
+}
+
+async function webdavDelete(env, fileName) {
+  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  const filePath = `${webdavUrl}/filecodebox/${fileName}`;
+  
+  try {
+    const response = await fetch(filePath, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': getWebDAVAuth(env),
+      }
+    });
+    
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`WebDAV delete failed: ${response.status}`);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('WebDAV delete error:', error);
+    throw error;
+  }
+}
+
 // 基础限流中间件（基于 KV 的滑动窗口桶）
 function rateLimit(name, limit, windowSec) {
   return rateLimitWithKey(name, limit, windowSec, (c) => c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown');
