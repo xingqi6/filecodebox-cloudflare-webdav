@@ -7,19 +7,12 @@
 1) 安装 Wrangler（如未安装）
 ```bash
 npm i -g wrangler
-```
-
-2) 配置绑定（需先在 Cloudflare 创建 KV 与 R2）
-- KV Namespace 绑定名：`FILECODEBOX_KV`
-- R2 Bucket 绑定名：`FILECODEBOX_R2`
-
-3) 配置 Secret（敏感项）
-```bash
+配置绑定（需先在 Cloudflare 创建 KV 与 R2）
+KV Namespace 绑定名：FILECODEBOX_KV
+R2 Bucket 绑定名：FILECODEBOX_R2
+配置 Secret（敏感项）
 wrangler secret put PERMANENT_PASSWORD   # 留空则使用默认 123456
-```
-
-4) 首次部署（可带上默认变量，也可省略使用默认值）
-```bash
+首次部署（可带上默认变量，也可省略使用默认值）
 wrangler deploy \
   --var MAX_FILE_SIZE=90 \
   --var MAX_TEXT_SIZE=1 \
@@ -30,58 +23,81 @@ wrangler deploy \
   --var VERIFY_PERM_RPM=20 \
   --var GET_INFO_RPM=120 \
   --var DOWNLOAD_RPM=60
-```
-
 说明：
-- `MAX_FILE_SIZE`、`MAX_TEXT_SIZE` 支持「MB」或大于 100000 的字节数。
-- `PERMANENT_PASSWORD` 未设置时，默认 `123456`。
-- 可通过 `QR_API` 切换二维码服务。
-- `NOTICE_TTL_HOURS` 控制首次声明弹窗 24h/自定义小时重复出现。
-- 速率限制值均为每分钟上限，按需调整。
 
-## 本地开发
-```bash
+MAX_FILE_SIZE、MAX_TEXT_SIZE 支持「MB」或大于 100000 的字节数。
+PERMANENT_PASSWORD 未设置时，默认 123456。
+可通过 QR_API 切换二维码服务。
+NOTICE_TTL_HOURS 控制首次声明弹窗 24h/自定义小时重复出现。
+速率限制值均为每分钟上限，按需调整。
+本地开发
 wrangler dev
-```
-
-## 常用维护
-- 更新某个变量：直接修改 `--var` 值后再 `wrangler deploy`。
-- 更新 Secret：
-```bash
+常用维护
+更新某个变量：直接修改 --var 值后再 wrangler deploy。
+更新 Secret：
 wrangler secret delete PERMANENT_PASSWORD
 wrangler secret put PERMANENT_PASSWORD
-```
+环境变量一览
+使用 GitHub Actions 自动部署（推荐）
+本项目已内置工作流 .github/workflows/deploy.yml，在你 Push 到 main/master 时自动部署到 Cloudflare Workers。
 
-## 环境变量一览
+🚀 快速开始（全自动）
+只需 2 步，无需手动创建 KV 和 R2！
 
-## 使用 GitHub Actions 自动部署（推荐）
+第 1 步：配置必需的 Secrets
+在 GitHub 仓库 Settings → Secrets and variables → Actions → New repository secret 添加：
 
-参考部署文档：[CloudPaste GitHub Actions 自动部署](https://doc.cloudpaste.qzz.io/guide/deploy-github-actions)
+CLOUDFLARE_API_TOKEN（必需）
 
-本项目已内置工作流 `.github/workflows/deploy.yml`，在你 Push 到 `main/master` 时自动部署到 Cloudflare Workers。
+在 Cloudflare Dashboard 创建 API Token
+需要包含 Account - Cloudflare Workers Scripts:Edit 权限
+建议使用 "Edit Cloudflare Workers" 模板
+CLOUDFLARE_ACCOUNT_ID（必需）
 
-准备工作：
-1) 在 Cloudflare Dashboard 提前创建并绑定资源（一次）：
-   - KV Namespace 绑定名：`FILECODEBOX_KV`
-   - R2 Bucket 绑定名：`FILECODEBOX_R2`
-2) 在 GitHub 仓库设置 Secrets：
-   - `CLOUDFLARE_API_TOKEN`（必须，含 Workers 权限）
-   - `CLOUDFLARE_ACCOUNT_ID`（必须）
-   - `PERMANENT_PASSWORD`（可选，作为 Secret 透传）
-3) 在 GitHub 仓库 Settings → Variables 添加（可选）：
-   - `MAX_FILE_SIZE`、`MAX_TEXT_SIZE`、`QR_API`、`NOTICE_TTL_HOURS`
-   - `UPLOAD_FILE_RPM`、`UPLOAD_TEXT_RPM`、`VERIFY_PERM_RPM`、`GET_INFO_RPM`、`DOWNLOAD_RPM`
+在 Cloudflare Dashboard 右侧可找到 Account ID
+第 2 步：触发部署
+方式 1：直接 Push 代码到 main 或 master 分支
+方式 2：在 GitHub Actions 页面手动点击 "Run workflow"
+✨ 自动化功能
+GitHub Action 会自动完成以下操作：
 
-触发部署：
-- 直接 Push 到 main/master；或在 Actions 中手动 Run Workflow。
+✅ 自动创建 KV Namespace（如果不存在）
+✅ 自动创建 R2 Bucket（如果不存在）
+✅ 自动获取资源 ID 并配置
+✅ 自动设置永久密码（默认：123456）
+✅ 自动部署到 Cloudflare Workers
 
-注意：
-- Bindings（`FILECODEBOX_KV` / `FILECODEBOX_R2`）建议在 Cloudflare Dashboard 配置一次后长期复用；工作流不会创建绑定。
-- 变量也可全部在 Dashboard 配置；GitHub Actions 中设置的会在部署时注入优先级更高。
-- Secrets：
-  - `PERMANENT_PASSWORD`（可选，默认 123456）
-- Vars：
-  - `MAX_FILE_SIZE`、`MAX_TEXT_SIZE`
-  - `QR_API`
-  - `NOTICE_TTL_HOURS`
-  - `UPLOAD_FILE_RPM`、`UPLOAD_TEXT_RPM`、`VERIFY_PERM_RPM`、`GET_INFO_RPM`、`DOWNLOAD_RPM`
+🔐 可选配置
+自定义永久密码
+在 Secrets 中添加 PERMANENT_PASSWORD（可选）：
+
+不设置：使用默认密码 123456
+设置后：使用你的自定义密码
+其他环境变量
+这些变量已在 wrangler.toml 中配置默认值，通常无需修改：
+
+MAX_FILE_SIZE=90（文件最大尺寸 MB）
+MAX_TEXT_SIZE=1（文本最大尺寸 MB）
+QR_API（二维码服务地址）
+NOTICE_TTL_HOURS=24（声明弹窗间隔小时）
+速率限制：UPLOAD_FILE_RPM、UPLOAD_TEXT_RPM、VERIFY_PERM_RPM、GET_INFO_RPM、DOWNLOAD_RPM
+📝 部署说明
+首次部署会自动创建所有必需的 Cloudflare 资源
+后续部署会复用已存在的资源
+KV Namespace 名称：FILECODEBOX_KV
+R2 Bucket 名称：filecodebox-storage
+部署成功后即可使用你的文件快递柜！
+
+---
+
+## 📌 使用说明
+
+1. **复制 `wrangler.toml`** 的内容，替换你仓库中的 `wrangler.toml` 文件
+2. **复制 `.github/workflows/deploy.yml`** 的内容，替换你仓库中的 `.github/workflows/deploy.yml` 文件
+3. **复制 `README.md`** 的内容，替换你仓库中的 `README.md` 文件
+
+然后在 GitHub 仓库设置中添加两个必需的 Secrets：
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+就可以自动部署了！🎉
