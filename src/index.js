@@ -18,6 +18,82 @@ function generateCode(length = 6) {
   }
   return result;
 }
+// WebDAV 辅助函数
+function getWebDAVAuth(env) {
+  const username = env.WEBDAV_USERNAME || 'baixiao258';
+  const password = env.WEBDAV_PASSWORD || '';
+  return 'Basic ' + btoa(username + ':' + password);
+}
+
+async function webdavUpload(env, fileName, fileStream) {
+  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  const filePath = `${webdavUrl}/filecodebox/${fileName}`;
+  
+  try {
+    const response = await fetch(filePath, {
+      method: 'PUT',
+      headers: {
+        'Authorization': getWebDAVAuth(env),
+      },
+      body: fileStream
+    });
+    
+    if (!response.ok) {
+      throw new Error(`WebDAV upload failed: ${response.status}`);
+    }
+    
+    return filePath;
+  } catch (error) {
+    console.error('WebDAV upload error:', error);
+    throw error;
+  }
+}
+
+async function webdavDownload(env, fileName) {
+  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  const filePath = `${webdavUrl}/filecodebox/${fileName}`;
+  
+  try {
+    const response = await fetch(filePath, {
+      method: 'GET',
+      headers: {
+        'Authorization': getWebDAVAuth(env),
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`WebDAV download failed: ${response.status}`);
+    }
+    
+    return response;
+  } catch (error) {
+    console.error('WebDAV download error:', error);
+    throw error;
+  }
+}
+
+async function webdavDelete(env, fileName) {
+  const webdavUrl = (env.WEBDAV_URL || 'https://zeze.teracloud.jp/dav/').replace(/\/$/, '');
+  const filePath = `${webdavUrl}/filecodebox/${fileName}`;
+  
+  try {
+    const response = await fetch(filePath, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': getWebDAVAuth(env),
+      }
+    });
+    
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`WebDAV delete failed: ${response.status}`);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('WebDAV delete error:', error);
+    throw error;
+  }
+}
 
 // 基础限流中间件（基于 KV 的滑动窗口桶）
 function rateLimit(name, limit, windowSec) {
@@ -106,14 +182,14 @@ async function cleanupExpiredFiles(env) {
               console.log(`🗑️ Deleted KV record: ${code}`);
               
               if (fileData.uuid_file_name) {
-                try {
-                  await env.FILECODEBOX_R2.delete(fileData.uuid_file_name);
-                  console.log(`🗑️ Deleted R2 file: ${fileData.uuid_file_name}`);
-                } catch (r2Error) {
-                  console.error(`❌ Failed to delete R2 file:`, r2Error);
-                  errorCount++;
-                }
-              }
+  try {
+    await webdavDelete(env, fileData.uuid_file_name);
+    console.log(`🗑️ Deleted WebDAV file: ${fileData.uuid_file_name}`);
+  } catch (webdavError) {
+    console.error(`❌ Failed to delete WebDAV file:`, webdavError);
+    errorCount++;
+  }
+}
               
               cleanedCount++;
             }
@@ -2022,18 +2098,13 @@ app.post('/api/share/file', async (c) => {
     console.log(`📁 Starting file upload: ${code}, file: ${fileName}, size: ${file.size}, expires: ${expiredAt ? expiredAt.toISOString() : 'never'}`);
     
     try {
-      await c.env.FILECODEBOX_R2.put(uuidFileName, file.stream(), {
-        httpMetadata: {
-          contentType: file.type || 'application/octet-stream',
-          contentDisposition: `attachment; filename="${encodeURIComponent(fileName)}"`
-        }
-      });
-      
-      console.log(`✅ File uploaded to R2: ${uuidFileName}`);
-    } catch (r2Error) {
-      console.error('❌ R2 upload failed:', r2Error);
-      return c.json({ code: 500, detail: 'R2 存储上传失败' }, 500);
-    }
+  await webdavUpload(c.env, uuidFileName, file.stream());
+  
+  console.log(`✅ File uploaded to WebDAV: ${uuidFileName}`);
+} catch (webdavError) {
+  console.error('❌ WebDAV upload failed:', webdavError);
+  return c.json({ code: 500, detail: 'WebDAV 存储上传失败' }, 500);
+}
     
     // 规范化文件名：prefix = 基名（不含扩展名），suffix = 扩展名（含点）
     const lastDotIndex = fileName.lastIndexOf('.');
@@ -2123,28 +2194,28 @@ app.get('/api/share/:code/download', async (c) => {
     }
     
     try {
-      const object = await c.env.FILECODEBOX_R2.get(fileData.uuid_file_name);
-      if (!object) {
-        console.error(`❌ R2 file not found: ${fileData.uuid_file_name} for code: ${code}`);
-        return c.json({ code: 404, detail: '文件不存在' }, 404);
-      }
-      
-      console.log(`📥 File ${code} downloaded: ${fileData.uuid_file_name}`);
-      
-      const asciiName = `${fileData.prefix}${fileData.suffix}`;
-      const disposition = object.httpMetadata?.contentDisposition || `attachment; filename="${encodeURIComponent(asciiName)}"; filename*=UTF-8''${encodeURIComponent(asciiName)}`;
+  const response = await webdavDownload(c.env, fileData.uuid_file_name);
+  if (!response || !response.ok) {
+    console.error(`❌ WebDAV file not found: ${fileData.uuid_file_name} for code: ${code}`);
+    return c.json({ code: 404, detail: '文件不存在' }, 404);
+  }
+  
+  console.log(`📥 File ${code} downloaded: ${fileData.uuid_file_name}`);
+  
+  const asciiName = `${fileData.prefix}${fileData.suffix}`;
+  const disposition = `attachment; filename="${encodeURIComponent(asciiName)}"; filename*=UTF-8''${encodeURIComponent(asciiName)}`;
 
-      return new Response(object.body, {
-        headers: {
-          'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
-          'Content-Disposition': disposition,
-          'Content-Length': object.size.toString()
-        }
-      });
-    } catch (r2Error) {
-      console.error(`❌ R2 get error for ${fileData.uuid_file_name}:`, r2Error);
-      return c.json({ code: 500, detail: 'R2 存储访问失败' }, 500);
+  return new Response(response.body, {
+    headers: {
+      'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream',
+      'Content-Disposition': disposition,
+      'Content-Length': response.headers.get('Content-Length') || '0'
     }
+  });
+} catch (webdavError) {
+  console.error(`❌ WebDAV get error for ${fileData.uuid_file_name}:`, webdavError);
+  return c.json({ code: 500, detail: 'WebDAV 存储访问失败' }, 500);
+}
   } catch (error) {
     console.error('Download file error:', error);
     return c.json({ code: 500, detail: '服务器错误' }, 500);
