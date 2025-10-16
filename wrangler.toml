@@ -8,14 +8,13 @@ binding = "FILECODEBOX_KV"
 id = "REPLACE_WITH_YOUR_KV_ID"
 preview_id = "REPLACE_WITH_YOUR_KV_PREVIEW_ID"
 
-[[r2_buckets]]
-binding = "FILECODEBOX_R2"
-bucket_name = "REPLACE_WITH_YOUR_R2_BUCKET"
-preview_bucket_name = "REPLACE_WITH_YOUR_R2_PREVIEW_BUCKET"
-
 [vars]
+# 建议用 Secrets/Variables 配置：
+#   WEBDAV_URL          - WebDAV 服务器地址
+#   WEBDAV_USERNAME     - WebDAV 用户名
 # 建议用 Secrets 配置敏感变量：
-#   wrangler secret put PERMANENT_PASSWORD         # 永久保存的密码，默认 123456
+#   wrangler secret put WEBDAV_PASSWORD         # WebDAV 密码
+#   wrangler secret put PERMANENT_PASSWORD      # 永久保存的密码，默认 123456
 
 # 以下为非敏感/容量限制等可公开变量（可按需覆盖默认值）
 MAX_FILE_SIZE = "90"                               # 文件最大尺寸（MB 或字节）
