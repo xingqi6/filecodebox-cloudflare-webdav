@@ -124,19 +124,34 @@ jobs:
           echo "🔄 正在生成部署配置..."
           cp wrangler.toml wrangler.gen.toml
           
+          # 验证必需的环境变量
           if [ -z "$CF_KV_ID" ] || [ -z "$CF_KV_PREVIEW_ID" ]; then
             echo "❌ 错误: KV ID 未设置"
             exit 1
           fi
+          
+          if [ -z "$WEBDAV_URL" ] || [ -z "$WEBDAV_USERNAME" ]; then
+            echo "❌ 错误: WebDAV 配置未设置"
+            echo "请在 GitHub 仓库设置中添加 Variables:"
+            echo "  - WEBDAV_URL"
+            echo "  - WEBDAV_USERNAME"
+            exit 1
+          fi
 
+          # 替换 KV 占位符
           sed -i "s/REPLACE_WITH_YOUR_KV_ID/$CF_KV_ID/g" wrangler.gen.toml
           sed -i "s/REPLACE_WITH_YOUR_KV_PREVIEW_ID/$CF_KV_PREVIEW_ID/g" wrangler.gen.toml
+          
+          # 替换 WebDAV 占位符
           sed -i "s|REPLACE_WITH_WEBDAV_URL|$WEBDAV_URL|g" wrangler.gen.toml
           sed -i "s/REPLACE_WITH_WEBDAV_USERNAME/$WEBDAV_USERNAME/g" wrangler.gen.toml
 
           echo ""
           echo "📄 生成的配置文件 (KV 部分):"
           grep -A 3 "kv_namespaces" wrangler.gen.toml || true
+          echo ""
+          echo "📄 生成的配置文件 (WebDAV 部分):"
+          grep -A 2 "WebDAV" wrangler.gen.toml || true
           echo ""
           echo "✅ 配置文件生成完成"
 
@@ -151,6 +166,9 @@ jobs:
           if [ -n "$WEBDAV_PASSWORD" ]; then
             echo "🔐 设置 WebDAV 密码"
             echo -n "$WEBDAV_PASSWORD" | wrangler secret put WEBDAV_PASSWORD --config wrangler.gen.toml
+          else
+            echo "❌ 错误: WEBDAV_PASSWORD 未设置"
+            exit 1
           fi
           
           # 设置永久密码
