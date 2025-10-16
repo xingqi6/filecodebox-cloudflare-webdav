@@ -406,6 +406,7 @@ const getIndexHTML = (env) => {
             font-size: 1.2rem;
             color: #6b7280;
             transition: all 0.2s;
+            z-index: 1000;
         }
         
         .modal-close:hover {
@@ -1060,7 +1061,7 @@ const getIndexHTML = (env) => {
             <button class="modal-close" onclick="closeModal('textPreviewModal')">&times;</button>
             <div style="position: relative;">
                 <h2 style="margin-bottom: 1.5rem; font-size: 1.1rem; font-weight: 600;">📝 文本预览</h2>
-                <button class="copy-btn" onclick="copyPreviewText()" style="position: absolute; top: 0.2rem; right: 3rem; background: #10b981; color: white; border: none; border-radius: 6px; padding: 0.35rem 0.75rem; font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.2s;">📋 复制全部</button>
+                <button class="copy-btn" onclick="copyPreviewText()" style="position: absolute; top: 0.2rem; right: 4rem; background: #10b981; color: white; border: none; border-radius: 6px; padding: 0.35rem 0.75rem; font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.2s; z-index: 10;">📋 复制全部</button>
                 
                 <div id="previewTextContent" style="
                     background: #f8fafc;
