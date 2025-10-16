@@ -9,9 +9,10 @@ id = "REPLACE_WITH_YOUR_KV_ID"
 preview_id = "REPLACE_WITH_YOUR_KV_PREVIEW_ID"
 
 [vars]
-# 建议用 Secrets/Variables 配置：
-#   WEBDAV_URL          - WebDAV 服务器地址
-#   WEBDAV_USERNAME     - WebDAV 用户名
+# WebDAV 配置 - 通过环境变量填写
+WEBDAV_URL = "REPLACE_WITH_WEBDAV_URL"
+WEBDAV_USERNAME = "REPLACE_WITH_WEBDAV_USERNAME"
+
 # 建议用 Secrets 配置敏感变量：
 #   wrangler secret put WEBDAV_PASSWORD         # WebDAV 密码
 #   wrangler secret put PERMANENT_PASSWORD      # 永久保存的密码，默认 123456
