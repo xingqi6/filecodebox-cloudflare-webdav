@@ -1,103 +1,236 @@
-# FileCodeBox on Cloudflare Workers
+# FileCodeBox - Cloudflare Workers 版本
 
-一个可匿名分享文件/文本、支持提取码的 Cloudflare Workers 应用。
+基于 Cloudflare Workers 的匿名文件快递柜，支持文件和文本的临时分享。
 
-## 一键部署
+## ✨ 特性
 
-1) 安装 Wrangler（如未安装）
+- 📦 支持文件和文本分享
+- 🔐 6位数字提取码
+- ⏰ 灵活的过期时间设置（分钟/小时/天/永久）
+- 🌐 使用 WebDAV 作为存储后端
+- 🚀 基于 Cloudflare Workers 边缘计算
+- 📱 响应式设计，支持移动端
+- 🔒 内置速率限制保护
+- 🧹 自动清理过期文件
+
+## 📋 前置要求
+
+1. **Cloudflare 账号**
+   - 免费账号即可
+   - 需要获取 API Token 和 Account ID
+
+2. **WebDAV 存储服务**
+   - 可以使用 TeraCloud、坚果云、Nextcloud 等
+   - 需要 WebDAV 地址、用户名和密码
+
+3. **GitHub 账号**（用于 GitHub Actions 自动部署）
+
+## 🚀 快速开始
+
+### 1️⃣ Fork 本仓库
+
+点击右上角的 Fork 按钮，将仓库复制到你的 GitHub 账号下。
+
+### 2️⃣ 获取 Cloudflare 凭证
+
+#### 获取 Account ID
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. 在右侧找到你的 **Account ID**
+3. 复制保存
+
+#### 获取 API Token
+1. 访问 [API Tokens 页面](https://dash.cloudflare.com/profile/api-tokens)
+2. 点击 "Create Token"
+3. 使用 "Edit Cloudflare Workers" 模板
+4. 或自定义权限：
+   - Account - Workers KV Storage - Edit
+   - Account - Workers Scripts - Edit
+5. 创建后复制保存（只显示一次）
+
+### 3️⃣ 准备 WebDAV 存储
+
+#### 推荐服务商
+
+**TeraCloud（日本，免费 10GB）**
+- 注册地址：https://teracloud.jp
+- WebDAV 地址：`https://[你的用户名].teracloud.jp/dav/`
+- 获取方式：注册后即可使用
+
+**坚果云（中国，免费 1GB 月上传）**
+- 注册地址：https://www.jianguoyun.com
+- 需要在设置中开启 WebDAV
+- WebDAV 地址：`https://dav.jianguoyun.com/dav/`
+
+**Nextcloud（自建）**
+- WebDAV 地址：`https://your-domain.com/remote.php/dav/files/username/`
+
+### 4️⃣ 配置 GitHub Secrets
+
+在你 Fork 的仓库中设置以下 Secrets：
+
+1. 进入仓库的 `Settings` → `Secrets and variables` → `Actions`
+2. 点击 `New repository secret` 添加以下变量：
+
+#### 必需的 Secrets
+
+| 变量名 | 说明 | 示例值 |
+|--------|------|--------|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token | `xxxx-your-api-token-xxxx` |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID | `abc123def456` |
+| `WEBDAV_PASSWORD` | WebDAV 密码 | `your_webdav_password` |
+| `PERMANENT_PASSWORD` | 永久保存功能密码（可选） | `123456`（默认值） |
+
+#### 必需的 Variables
+
+在 `Variables` 标签页添加：
+
+| 变量名 | 说明 | 示例值 |
+|--------|------|--------|
+| `WEBDAV_URL` | WebDAV 地址 | `https://zeze.teracloud.jp/dav/` |
+| `WEBDAV_USERNAME` | WebDAV 用户名 | `your_username` |
+
+### 5️⃣ 触发部署
+
+有两种方式触发部署：
+
+#### 方法一：推送代码
 ```bash
-npm i -g wrangler
-配置绑定（需先在 Cloudflare 创建 KV 与 R2）
-KV Namespace 绑定名：FILECODEBOX_KV
-R2 Bucket 绑定名：FILECODEBOX_R2
-配置 Secret（敏感项）
-wrangler secret put PERMANENT_PASSWORD   # 留空则使用默认 123456
-首次部署（可带上默认变量，也可省略使用默认值）
-wrangler deploy \
-  --var MAX_FILE_SIZE=90 \
-  --var MAX_TEXT_SIZE=1 \
-  --var QR_API=https://api.qrserver.com/v1/create-qr-code/ \
-  --var NOTICE_TTL_HOURS=24 \
-  --var UPLOAD_FILE_RPM=10 \
-  --var UPLOAD_TEXT_RPM=20 \
-  --var VERIFY_PERM_RPM=20 \
-  --var GET_INFO_RPM=120 \
-  --var DOWNLOAD_RPM=60
-说明：
+git commit --allow-empty -m "Trigger deployment"
+git push
+```
 
-MAX_FILE_SIZE、MAX_TEXT_SIZE 支持「MB」或大于 100000 的字节数。
-PERMANENT_PASSWORD 未设置时，默认 123456。
-可通过 QR_API 切换二维码服务。
-NOTICE_TTL_HOURS 控制首次声明弹窗 24h/自定义小时重复出现。
-速率限制值均为每分钟上限，按需调整。
-本地开发
-wrangler dev
-常用维护
-更新某个变量：直接修改 --var 值后再 wrangler deploy。
-更新 Secret：
-wrangler secret delete PERMANENT_PASSWORD
-wrangler secret put PERMANENT_PASSWORD
-环境变量一览
-使用 GitHub Actions 自动部署（推荐）
-本项目已内置工作流 .github/workflows/deploy.yml，在你 Push 到 main/master 时自动部署到 Cloudflare Workers。
+#### 方法二：手动触发
+1. 进入仓库的 `Actions` 标签
+2. 选择 "Deploy to Cloudflare Workers"
+3. 点击 "Run workflow"
 
-🚀 快速开始（全自动）
-只需 2 步，无需手动创建 KV 和 R2！
+### 6️⃣ 查看部署结果
 
-第 1 步：配置必需的 Secrets
-在 GitHub 仓库 Settings → Secrets and variables → Actions → New repository secret 添加：
+1. 部署完成后，访问 [Cloudflare Workers Dashboard](https://dash.cloudflare.com/?to=/:account/workers)
+2. 找到名为 `filecodebox` 的 Worker
+3. 点击查看部署的 URL（如：`https://filecodebox.your-subdomain.workers.dev`）
 
-CLOUDFLARE_API_TOKEN（必需）
+## ⚙️ 可选配置
 
-在 Cloudflare Dashboard 创建 API Token
-需要包含 Account - Cloudflare Workers Scripts:Edit 权限
-建议使用 "Edit Cloudflare Workers" 模板
-CLOUDFLARE_ACCOUNT_ID（必需）
+### 自定义环境变量
 
-在 Cloudflare Dashboard 右侧可找到 Account ID
-第 2 步：触发部署
-方式 1：直接 Push 代码到 main 或 master 分支
-方式 2：在 GitHub Actions 页面手动点击 "Run workflow"
-✨ 自动化功能
-GitHub Action 会自动完成以下操作：
+在 `wrangler.toml` 文件中可以修改以下配置：
 
-✅ 自动创建 KV Namespace（如果不存在）
-✅ 自动创建 R2 Bucket（如果不存在）
-✅ 自动获取资源 ID 并配置
-✅ 自动设置永久密码（默认：123456）
-✅ 自动部署到 Cloudflare Workers
+```toml
+[vars]
+# 文件大小限制（MB 或字节）
+MAX_FILE_SIZE = "90"              # 默认 90MB
+MAX_TEXT_SIZE = "5"               # 默认 5MB
 
-🔐 可选配置
-自定义永久密码
-在 Secrets 中添加 PERMANENT_PASSWORD（可选）：
+# 二维码生成服务
+QR_API = "https://api.qrserver.com/v1/create-qr-code/"
 
-不设置：使用默认密码 123456
-设置后：使用你的自定义密码
-其他环境变量
-这些变量已在 wrangler.toml 中配置默认值，通常无需修改：
+# 首次声明弹窗间隔（小时）
+NOTICE_TTL_HOURS = "24"           # 默认 24 小时
 
-MAX_FILE_SIZE=90（文件最大尺寸 MB）
-MAX_TEXT_SIZE=1（文本最大尺寸 MB）
-QR_API（二维码服务地址）
-NOTICE_TTL_HOURS=24（声明弹窗间隔小时）
-速率限制：UPLOAD_FILE_RPM、UPLOAD_TEXT_RPM、VERIFY_PERM_RPM、GET_INFO_RPM、DOWNLOAD_RPM
-📝 部署说明
-首次部署会自动创建所有必需的 Cloudflare 资源
-后续部署会复用已存在的资源
-KV Namespace 名称：FILECODEBOX_KV
-R2 Bucket 名称：filecodebox-storage
-部署成功后即可使用你的文件快递柜！
+# 速率限制（每分钟请求数）
+UPLOAD_FILE_RPM = "10"            # 上传文件限制
+UPLOAD_TEXT_RPM = "20"            # 上传文本限制
+VERIFY_PERM_RPM = "20"            # 验证密码限制
+GET_INFO_RPM = "120"              # 获取信息限制
+DOWNLOAD_RPM = "60"               # 下载限制
+```
+
+### 自动清理任务
+
+系统会自动清理过期文件，清理频率在 `wrangler.toml` 中配置：
+
+```toml
+[triggers]
+crons = ["*/5 * * * *"]  # 每5分钟运行一次
+```
+
+可以修改为其他 Cron 表达式，例如：
+- `0 * * * *` - 每小时运行一次
+- `0 0 * * *` - 每天凌晨运行一次
+
+## 🔧 本地开发
+
+### 安装依赖
+```bash
+npm install
+```
+
+### 本地运行
+```bash
+npm run dev
+```
+
+### 部署到 Cloudflare
+```bash
+npm run deploy
+```
+
+## 📝 使用说明
+
+### 发送文件
+1. 选择"发文件"标签
+2. 上传文件或输入文本
+3. 设置过期时间
+4. 点击"生成提取码"
+5. 保存6位数字提取码
+
+### 接收文件
+1. 选择"取文件"标签
+2. 输入6位数字提取码
+3. 查看或下载文件
+
+### 永久保存
+- 选择"永久"选项需要输入密码
+- 默认密码：`123456`
+- 可通过 `PERMANENT_PASSWORD` Secret 自定义
+
+## 🛡️ 安全性
+
+- ✅ 内置速率限制，防止滥用
+- ✅ 自动清理过期文件
+- ✅ WebDAV 密码通过 Secrets 加密存储
+- ✅ 支持自定义永久保存密码
+- ⚠️ 建议定期更换 API Token 和密码
+
+## 🐛 常见问题
+
+### 部署失败？
+1. 检查 Secrets 是否正确填写
+2. 确认 API Token 权限是否足够
+3. 查看 GitHub Actions 日志获取详细错误
+
+### WebDAV 连接失败？
+1. 确认 WebDAV 地址格式正确
+2. 测试用户名密码是否正确
+3. 检查 WebDAV 服务是否正常运行
+
+### 文件上传失败？
+1. 检查文件大小是否超过限制
+2. 确认 WebDAV 存储空间是否充足
+3. 查看浏览器控制台错误信息
+
+### KV 命名空间创建失败？
+- 部署会自动创建 KV 命名空间
+- 如果失败，可以手动创建后在 `wrangler.toml` 中填写 ID
+
+## 📄 许可证
+
+MIT License
+
+## 🙏 致谢
+
+- [Hono](https://hono.dev/) - Web 框架
+- [Cloudflare Workers](https://workers.cloudflare.com/) - 边缘计算平台
+- [FileCodeBox](https://github.com/vastsa/FileCodeBox) - 原始项目灵感
+
+## 📮 反馈与贡献
+
+欢迎提交 Issue 和 Pull Request！
 
 ---
 
-## 📌 使用说明
-
-1. **复制 `wrangler.toml`** 的内容，替换你仓库中的 `wrangler.toml` 文件
-2. **复制 `.github/workflows/deploy.yml`** 的内容，替换你仓库中的 `.github/workflows/deploy.yml` 文件
-3. **复制 `README.md`** 的内容，替换你仓库中的 `README.md` 文件
-
-然后在 GitHub 仓库设置中添加两个必需的 Secrets：
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-就可以自动部署了！🎉
+**注意事项：**
+- 请遵守当地法律法规，不要上传违法内容
+- 建议定期备份重要文件
+- 免费版 Cloudflare Workers 有请求限制，请合理使用
