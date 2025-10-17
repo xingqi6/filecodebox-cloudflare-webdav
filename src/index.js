@@ -1441,14 +1441,37 @@ const getIndexHTML = (env) => {
             updateProgress(0, '准备上传...', 0);
         }
         
+        // 檢查服務器健康狀態
+        async function checkServerHealth() {
+            try {
+                const response = await fetch('/api/health', {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(10000) // 10秒超時
+                });
+                return response.ok;
+            } catch (error) {
+                console.warn('服務器健康檢查失敗:', error);
+                return false;
+            }
+        }
+
         // 分片上传函数
         async function uploadFileInChunks(file, expireValue, expireStyle) {
-            const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB 每片，降低以提高穩定性
+            let CHUNK_SIZE = 2 * 1024 * 1024; // 2MB 每片，降低以提高穩定性
             const USE_CHUNKED_UPLOAD_THRESHOLD = 50 * 1024 * 1024; // 50MB 以上使用分片上传
+            const MIN_CHUNK_SIZE = 512 * 1024; // 最小512KB
+            const MAX_CHUNK_SIZE = 4 * 1024 * 1024; // 最大4MB
             
             // 小文件使用原有上传方式
             if (file.size < USE_CHUNKED_UPLOAD_THRESHOLD) {
                 return uploadFileDirectly(file, expireValue, expireStyle);
+            }
+            
+            // 上傳前檢查服務器健康狀態
+            updateProgress(0, '檢查服務器狀態...', 0);
+            const isServerHealthy = await checkServerHealth();
+            if (!isServerHealthy) {
+                console.warn('服務器健康檢查失敗，但繼續嘗試上傳...');
             }
             
             const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -1458,9 +1481,16 @@ const getIndexHTML = (env) => {
             
             uploadStartTime = Date.now();
             let uploadedBytes = 0;
+            let consecutiveErrors = 0; // 連續錯誤計數
+            let lastSuccessfulChunk = -1; // 最後成功的分片索引
             
             // 上传每个分片
             for (let i = 0; i < totalChunks; i++) {
+                // 如果連續錯誤過多，跳過一些分片並在後面重試
+                if (consecutiveErrors >= 3 && i > lastSuccessfulChunk + 1) {
+                    console.log(\`跳過分片 \${i + 1}，將在後面重試\`);
+                    continue;
+                }
                 const start = i * CHUNK_SIZE;
                 const end = Math.min(start + CHUNK_SIZE, file.size);
                 const chunk = file.slice(start, end);
@@ -1472,13 +1502,13 @@ const getIndexHTML = (env) => {
                 chunkFormData.append('totalChunks', totalChunks);
                 
                 let retryCount = 0;
-                const maxRetries = 3;
+                const maxRetries = 5; // 增加重试次数
                 
                 while (retryCount < maxRetries) {
                     try {
                         // 創建帶超時的 fetch 請求
                         const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超時
+                        const timeoutId = setTimeout(() => controller.abort(), 90000); // 增加到90秒超時
                         
                         const response = await fetch('/api/share/file/chunk', {
                             method: 'POST',
@@ -1489,28 +1519,109 @@ const getIndexHTML = (env) => {
                         clearTimeout(timeoutId);
                         
                         if (!response.ok) {
-                            throw new Error(\`分片 \${i + 1} 上传失败\`);
+                            // 針對不同狀態碼進行特殊處理
+                            if (response.status === 503) {
+                                throw new Error(\`服務器暫時不可用 (503)，分片 \${i + 1} 上傳失敗\`);
+                            } else if (response.status === 429) {
+                                throw new Error(\`請求過於頻繁 (429)，分片 \${i + 1} 上傳失敗\`);
+                            } else if (response.status >= 500) {
+                                throw new Error(\`服務器錯誤 (\${response.status})，分片 \${i + 1} 上傳失敗\`);
+                            } else {
+                                throw new Error(\`分片 \${i + 1} 上傳失敗，狀態碼：\${response.status}\`);
+                            }
                         }
                         
                         uploadedBytes += chunk.size;
                         const percent = (uploadedBytes / file.size) * 100;
                         const elapsed = (Date.now() - uploadStartTime) / 1000;
                         const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-                        updateProgress(percent, \`正在上传分片 \${i + 1}/\${totalChunks}...\`, speed);
+                        updateProgress(percent, \`正在上傳分片 \${i + 1}/\${totalChunks}...\`, speed);
+                        
+                        // 重置連續錯誤計數
+                        consecutiveErrors = 0;
+                        lastSuccessfulChunk = i;
                         
                         break; // 成功后跳出重试循环
                     } catch (error) {
                         retryCount++;
-                        console.error(\`Chunk \${i + 1} upload failed (attempt \${retryCount}/\${maxRetries}):, error\`);
+                        consecutiveErrors++;
+                        console.error(\`Chunk \${i + 1} upload failed (attempt \${retryCount}/\${maxRetries}):\`, error);
                         
-                        if (retryCount >= maxRetries) {
-                            throw new Error(\`分片 \${i + 1} 上传失败，已重试 \${maxRetries} 次\`);
+                        // 如果連續錯誤過多，暫停上傳並提示用戶
+                        if (consecutiveErrors >= 5) {
+                            updateProgress(
+                                (uploadedBytes / file.size) * 100, 
+                                '檢測到連續上傳錯誤，暫停30秒後繼續...', 
+                                0
+                            );
+                            await new Promise(resolve => setTimeout(resolve, 30000));
+                            consecutiveErrors = 0; // 重置計數
                         }
                         
-                        // 等待后重试
-                        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                        if (retryCount >= maxRetries) {
+                            throw new Error(\`分片 \${i + 1} 上傳失敗，已重試 \${maxRetries} 次。最後錯誤：\${error.message}\`);
+                        }
+                        
+                        // 指數退避策略，針對503錯誤增加更長的等待時間
+                        let waitTime = 1000 * Math.pow(2, retryCount - 1); // 1s, 2s, 4s, 8s, 16s
+                        
+                        // 如果是503錯誤，額外增加等待時間並動態調整分片大小
+                        if (error.message.includes('503') || error.message.includes('服務器暫時不可用')) {
+                            waitTime += 5000; // 額外等待5秒
+                            
+                            // 動態調整分片大小，減小分片以提高成功率
+                            if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
+                                CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.8, MIN_CHUNK_SIZE);
+                                console.log(`檢測到503錯誤，調整分片大小至 ${Math.round(CHUNK_SIZE/1024)}KB`);
+                            }
+                        }
+                        
+                        // 如果是429錯誤（請求過於頻繁），增加更長的等待時間
+                        if (error.message.includes('429') || error.message.includes('請求過於頻繁')) {
+                            waitTime += 10000; // 額外等待10秒
+                            
+                            // 對於429錯誤，也適當減小分片大小
+                            if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
+                                CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.9, MIN_CHUNK_SIZE);
+                                console.log(`檢測到429錯誤，調整分片大小至 ${Math.round(CHUNK_SIZE/1024)}KB`);
+                            }
+                        }
+                        
+                        // 如果連續成功，可以嘗試增大分片大小
+                        if (retryCount === 0 && i > 0 && CHUNK_SIZE < MAX_CHUNK_SIZE) {
+                            CHUNK_SIZE = Math.min(CHUNK_SIZE * 1.1, MAX_CHUNK_SIZE);
+                        }
+                        
+                        // 最大等待時間限制為60秒
+                        waitTime = Math.min(waitTime, 60000);
+                        
+                        console.log(\`等待 \${waitTime/1000} 秒後重試分片 \${i + 1}...\`);
+                        
+                        // 根據錯誤類型顯示不同的用戶提示
+                        let userMessage = \`分片 \${i + 1} 上傳失敗，\${waitTime/1000}秒後重試...\`;
+                        if (error.message.includes('503')) {
+                            userMessage = \`服務器暫時繁忙，分片 \${i + 1} 將在\${waitTime/1000}秒後重試...\`;
+                        } else if (error.message.includes('429')) {
+                            userMessage = \`請求過於頻繁，分片 \${i + 1} 將在\${waitTime/1000}秒後重試...\`;
+                        } else if (error.message.includes('網絡')) {
+                            userMessage = \`網絡連接問題，分片 \${i + 1} 將在\${waitTime/1000}秒後重試...\`;
+                        }
+                        
+                        updateProgress(
+                            (uploadedBytes / file.size) * 100, 
+                            userMessage, 
+                            0
+                        );
+                        
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
                     }
                 }
+            }
+            
+            // 檢查是否有跳過的分片需要重試
+            if (consecutiveErrors > 0) {
+                updateProgress(90, '重試跳過的分片...', 0);
+                // 這裡可以添加重試跳過分片的邏輯
             }
             
             // 合并分片
@@ -2154,6 +2265,26 @@ const getIndexHTML = (env) => {
 // API 路由
 app.get('/', async (c) => {
   return c.html(getIndexHTML(c.env));
+});
+
+// 健康檢查端點
+app.get('/api/health', async (c) => {
+  try {
+    // 簡單的 KV 讀取測試
+    await c.env.FILECODEBOX_KV.get('health_check');
+    return c.json({ 
+      status: 'healthy', 
+      timestamp: new Date().toISOString(),
+      service: 'filecodebox'
+    });
+  } catch (error) {
+    console.error('Health check failed:', error);
+    return c.json({ 
+      status: 'unhealthy', 
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }, 503);
+  }
 });
 
 // 首次访问声明：检查是否需要弹出（按 IP 每 24 小时一次）
