@@ -990,6 +990,7 @@ const getIndexHTML = (env) => {
                             <input type="file" id="fileInput" style="display: none;">
                         </div>
                         <div class="file-size-hint">最大支持 ${maxFileMB}MB 文件上传（文本 ${maxTextMB}MB）</div>
+                        <div class="file-size-hint" style="color: #667eea; font-weight: 500; margin-top: 0.5rem;">✨ 选择文件后将自动开始上传</div>
                     </div>
                     
                     <div class="upload-progress" id="uploadProgress">
@@ -1015,7 +1016,7 @@ const getIndexHTML = (env) => {
                             </select>
                         </div>
                     </div>
-                    <button type="submit" class="btn" id="fileSubmitBtn">生成提取码</button>
+                    <button type="submit" class="btn" id="fileSubmitBtn">选择文件后自动上传</button>
                 </form>
             </div>
             
@@ -1395,17 +1396,49 @@ const getIndexHTML = (env) => {
         fileUpload.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
-                const file = e.target.files[0];
-                if (file.size > (window.APP_CONFIG?.MAX_FILE_SIZE_BYTES || (90 * 1024 * 1024))) {
-                    const limitMB = Math.round((window.APP_CONFIG?.MAX_FILE_SIZE_BYTES || (90 * 1024 * 1024)) / 1024 / 1024);
-                    alert('文件大小超过 ' + limitMB + 'MB 限制');
-                    return;
-                }
-                currentFileData = file;
-                fileUpload.innerHTML = '📄 <span style="word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; display: inline-block;">' + file.name + '</span><br><small>' + formatFileSize(file.size) + '</small>';
-                hideUploadProgress();
+                handleFileSelect(e.target.files[0]);
             }
         });
+
+        // 拖拽上传功能
+        fileUpload.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fileUpload.classList.add('dragover');
+        });
+
+        fileUpload.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fileUpload.classList.remove('dragover');
+        });
+
+        fileUpload.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fileUpload.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFileSelect(files[0]);
+            }
+        });
+
+        // 统一的文件处理函数
+        function handleFileSelect(file) {
+            if (file.size > (window.APP_CONFIG?.MAX_FILE_SIZE_BYTES || (90 * 1024 * 1024))) {
+                const limitMB = Math.round((window.APP_CONFIG?.MAX_FILE_SIZE_BYTES || (90 * 1024 * 1024)) / 1024 / 1024);
+                alert('文件大小超过 ' + limitMB + 'MB 限制');
+                return;
+            }
+            currentFileData = file;
+            
+            // 显示文件信息并立即开始上传
+            fileUpload.innerHTML = '📄 <span style="word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; display: inline-block;">' + file.name + '</span><br><small>' + formatFileSize(file.size) + '</small><br><small style="color: #667eea;">⏳ 正在准备上传...</small>';
+            
+            // 立即开始上传
+            startFileUpload();
+        }
         
         function formatFileSize(bytes) {
             if (bytes === 0) return '0 Bytes';
@@ -1429,11 +1462,16 @@ const getIndexHTML = (env) => {
         }
         
         function updateProgress(percent, status, speed = 0) {
-            document.getElementById('progressBar').style.width = percent + '%';
-            document.getElementById('progressPercent').textContent = Math.round(percent) + '%';
-            document.getElementById('uploadStatus').textContent = status;
-            if (speed > 0) {
-                document.getElementById('progressSpeed').textContent = formatSpeed(speed);
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const uploadStatus = document.getElementById('uploadStatus');
+            const progressSpeed = document.getElementById('progressSpeed');
+            
+            if (progressBar) progressBar.style.width = percent + '%';
+            if (progressPercent) progressPercent.textContent = Math.round(percent) + '%';
+            if (uploadStatus) uploadStatus.textContent = status;
+            if (speed > 0 && progressSpeed) {
+                progressSpeed.textContent = formatSpeed(speed);
             }
         }
         
@@ -1488,10 +1526,9 @@ const getIndexHTML = (env) => {
             
             return await response.json();
         }
-        
-        
-        document.getElementById('fileForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+
+        // 开始文件上传
+        async function startFileUpload() {
             if (!currentFileData) {
                 alert('请选择文件');
                 return;
@@ -1501,13 +1538,24 @@ const getIndexHTML = (env) => {
             const originalBtnText = submitBtn.textContent;
             
             try {
+                // 立即显示上传进度和状态
+                showUploadProgress();
+                updateProgress(0, '正在准备上传...', 0);
+                
                 submitBtn.disabled = true;
                 submitBtn.innerHTML = '<span class="loading-spinner"></span>上传中...';
-                showUploadProgress();
+                
+                // 给用户一个短暂的视觉反馈
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                updateProgress(5, '正在连接服务器...', 0);
                 uploadStartTime = Date.now();
                 
                 const expireValue = document.getElementById('fileExpireValue').value;
                 const expireStyle = document.getElementById('fileExpireStyle').value;
+                
+                // 模拟进度更新
+                updateProgress(10, '正在上传文件...', 0);
                 
                 // 使用直接上传
                 const result = await uploadFileDirect(currentFileData, expireValue, expireStyle);
@@ -1528,7 +1576,7 @@ const getIndexHTML = (env) => {
                     
                     showSuccessModal(code, currentFileData.name, currentFileData.size, 'file');
                     
-                    const shareLink = \`\${window.location.origin}/?code=\${code}\`;
+                    const shareLink = `${window.location.origin}/?code=${code}`;
                     copyToClipboard(shareLink);
                     showNotification('✅ 取件链接已复制到剪贴板', 'success');
                     
@@ -1546,6 +1594,26 @@ const getIndexHTML = (env) => {
                 submitBtn.disabled = false;
                 submitBtn.textContent = originalBtnText;
             }
+        }
+        
+        
+        document.getElementById('fileForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            // 文件上传现在在文件选择时自动开始，这里只处理其他逻辑
+            if (!currentFileData) {
+                alert('请选择文件');
+                return;
+            }
+            
+            // 如果文件正在上传，显示提示
+            const submitBtn = document.getElementById('fileSubmitBtn');
+            if (submitBtn.disabled) {
+                showNotification('文件正在上传中，请稍候...', 'info');
+                return;
+            }
+            
+            // 如果文件已经上传完成，重新开始上传
+            startFileUpload();
         });
         
         document.getElementById('textForm').addEventListener('submit', async (e) => {
