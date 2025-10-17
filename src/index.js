@@ -299,7 +299,7 @@ const getIndexHTML = (env) => {
     return n < 100000 ? n * 1024 * 1024 : n;
   };
   const maxFileBytes = parseLimitBytes(env?.MAX_FILE_SIZE, 90 * 1024 * 1024);
-  const maxTextBytes = parseLimitBytes(env?.MAX_TEXT_SIZE, 1 * 1024 * 1024);
+  const maxTextBytes = parseLimitBytes(env?.MAX_TEXT_SIZE, 5 * 1024 * 1024);
   const maxFileMB = Math.round(maxFileBytes / 1024 / 1024);
   const maxTextMB = Math.round(maxTextBytes / 1024 / 1024);
   const qrApi = (env && env.QR_API) || 'https://api.qrserver.com/v1/create-qr-code/';
@@ -1467,367 +1467,28 @@ const getIndexHTML = (env) => {
             return false;
         }
 
-        // 分片上传函数
-        async function uploadFileInChunks(file, expireValue, expireStyle) {
-            let CHUNK_SIZE = 2 * 1024 * 1024; // 2MB 每片，降低以提高穩定性
-            const USE_CHUNKED_UPLOAD_THRESHOLD = 50 * 1024 * 1024; // 50MB 以上使用分片上传
-            const MIN_CHUNK_SIZE = 256 * 1024; // 降低最小值到256KB
-            const MAX_CHUNK_SIZE = 4 * 1024 * 1024; // 最大4MB
+        // 直接上传函数
+        async function uploadFileDirect(file, expireValue, expireStyle) {
+            console.log('Using direct upload for file: ' + file.name);
             
-            // 小文件使用原有上传方式
-            if (file.size < USE_CHUNKED_UPLOAD_THRESHOLD) {
-                return uploadFileDirectly(file, expireValue, expireStyle);
-            }
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('expire_value', expireValue);
+            formData.append('expire_style', expireStyle);
             
-            // 上傳前檢查服務器健康狀態
-            updateProgress(0, '檢查服務器狀態...', 0);
-            const isServerHealthy = await checkServerHealth();
-            if (!isServerHealthy) {
-                console.warn('服務器健康檢查失敗，但繼續嘗試上傳...');
-                updateProgress(5, '服務器狀態不佳，將使用更保守的上傳策略...', 0);
-                // 如果服務器不健康，使用更小的初始分片大小
-                CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.5, MIN_CHUNK_SIZE);
-            } else {
-                updateProgress(5, '服務器狀態良好，開始上傳...', 0);
-            }
-            
-            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-            const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-            
-            console.log('Starting chunked upload: ' + file.name + ', size: ' + file.size + ', chunks: ' + totalChunks);
-            
-            uploadStartTime = Date.now();
-            let uploadedBytes = 0;
-            let consecutiveErrors = 0; // 連續錯誤計數
-            let lastSuccessfulChunk = -1; // 最後成功的分片索引
-            let consecutive503Errors = 0; // 專門追蹤503錯誤
-            let serverUnavailableStartTime = null; // 服務器不可用開始時間
-            const MAX_503_ERRORS = 10; // 最大連續503錯誤次數
-            const SERVER_UNAVAILABLE_TIMEOUT = 5 * 60 * 1000; // 5分鐘後放棄
-            
-            // 上传每个分片
-            for (let i = 0; i < totalChunks; i++) {
-                // 如果連續錯誤過多，跳過一些分片並在後面重試
-                if (consecutiveErrors >= 3 && i > lastSuccessfulChunk + 1) {
-                    console.log('Skipping chunk ' + (i + 1) + ', will retry later');
-                    continue;
-                }
-                const start = i * CHUNK_SIZE;
-                const end = Math.min(start + CHUNK_SIZE, file.size);
-                const chunk = file.slice(start, end);
-                
-                const chunkFormData = new FormData();
-                chunkFormData.append('chunk', chunk);
-                chunkFormData.append('uploadId', uploadId);
-                chunkFormData.append('chunkIndex', i);
-                chunkFormData.append('totalChunks', totalChunks);
-                
-                let retryCount = 0;
-                const maxRetries = 8; // 增加重试次数到8次
-                
-                while (retryCount < maxRetries) {
-                    try {
-                        // 檢查是否應該觸發斷路器
-                        if (consecutive503Errors >= MAX_503_ERRORS) {
-                            if (!serverUnavailableStartTime) {
-                                serverUnavailableStartTime = Date.now();
-                            }
-                            
-                            const unavailableDuration = Date.now() - serverUnavailableStartTime;
-                            if (unavailableDuration > SERVER_UNAVAILABLE_TIMEOUT) {
-                                throw new Error('服務器持續不可用超過5分鐘，上傳已取消。請稍後再試。');
-                            }
-                            
-                            // 實施更長的等待時間
-                            const circuitBreakerWait = Math.min(60000, 10000 + (consecutive503Errors - MAX_503_ERRORS) * 5000);
-                            updateProgress(
-                                (uploadedBytes / file.size) * 100, 
-                                "服務器持續不可用，等待 " + (circuitBreakerWait/1000) + " 秒後重試...", 
-                                0
-                            );
-                            await new Promise(resolve => setTimeout(resolve, circuitBreakerWait));
-                        }
-                        
-                        // 創建帶超時的 fetch 請求
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 120000); // 增加到120秒超時
-                        
-                        const response = await fetch('/api/share/file/chunk', {
-                            method: 'POST',
-                            body: chunkFormData,
-                            signal: controller.signal
-                        });
-                        
-                        clearTimeout(timeoutId);
-                        
-                        if (!response.ok) {
-                            // 針對不同狀態碼進行特殊處理
-                            if (response.status === 503) {
-                                consecutive503Errors++;
-                                if (!serverUnavailableStartTime) {
-                                    serverUnavailableStartTime = Date.now();
-                                }
-                                throw new Error("服務器暫時不可用 (503)，分片 " + (i + 1) + " 上傳失敗");
-                            } else if (response.status === 429) {
-                                throw new Error("請求過於頻繁 (429)，分片 " + (i + 1) + " 上傳失敗");
-                            } else if (response.status >= 500) {
-                                throw new Error("服務器錯誤 (" + response.status + ")，分片 " + (i + 1) + " 上傳失敗");
-                            } else {
-                                throw new Error("分片 " + (i + 1) + " 上傳失敗，狀態碼：" + response.status);
-                            }
-                        }
-                        
-                        uploadedBytes += chunk.size;
-                        const percent = (uploadedBytes / file.size) * 100;
-                        const elapsed = (Date.now() - uploadStartTime) / 1000;
-                        const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-                        updateProgress(percent, "正在上傳分片 " + (i + 1) + "/" + totalChunks + "...", speed);
-                        
-                        // 成功後重置503錯誤計數
-                        consecutive503Errors = 0;
-                        serverUnavailableStartTime = null;
-                        
-                        // 重置連續錯誤計數
-                        consecutiveErrors = 0;
-                        lastSuccessfulChunk = i;
-                        
-                        break; // 成功后跳出重试循环
-                    } catch (error) {
-                        retryCount++;
-                        consecutiveErrors++;
-                        console.error(\`Chunk \${i + 1} upload failed (attempt \${retryCount}/\${maxRetries}):\`, error);
-                        
-                        // 如果連續錯誤過多，暫停上傳並提示用戶
-                        if (consecutiveErrors >= 5) {
-                            updateProgress(
-                                (uploadedBytes / file.size) * 100, 
-                                '檢測到連續上傳錯誤，暫停30秒後繼續...', 
-                                0
-                            );
-                            await new Promise(resolve => setTimeout(resolve, 30000));
-                            consecutiveErrors = 0; // 重置計數
-                        }
-                        
-                        if (retryCount >= maxRetries) {
-                            let errorMessage = "分片 " + (i + 1) + " 上傳失敗，已重試 " + maxRetries + " 次。最後錯誤：" + error.message;
-                            
-                            // 根據錯誤類型提供建議
-                            if (error.message.includes('503')) {
-                                errorMessage += '\\n\\n建議：服務器當前負載過高，請稍後再試或嘗試上傳較小的文件。';
-                            } else if (error.message.includes('429')) {
-                                errorMessage += '\\n\\n建議：請求過於頻繁，請等待幾分鐘後再試。';
-                            } else if (error.message.includes('timeout') || error.message.includes('超時')) {
-                                errorMessage += '\\n\\n建議：網絡連接不穩定，請檢查網絡連接或嘗試在網絡較好的環境下上傳。';
-                            }
-                            
-                            throw new Error(errorMessage);
-                        }
-                        
-                        // 改進的指數退避策略
-                        let waitTime = 1000 * Math.pow(2, retryCount); // 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s
-                        
-                        // 如果是503錯誤，實施更智能的處理策略
-                        if (error.message.includes('503') || error.message.includes('服務器暫時不可用')) {
-                            // 根據連續503錯誤次數調整等待時間
-                            const base503Wait = Math.min(10000 + (consecutive503Errors * 2000), 60000);
-                            waitTime = Math.max(waitTime, base503Wait);
-                            
-                            // 更激進地減小分片大小
-                            if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
-                                const reductionFactor = Math.max(0.6, 1 - (consecutive503Errors * 0.1));
-                                CHUNK_SIZE = Math.max(CHUNK_SIZE * reductionFactor, MIN_CHUNK_SIZE);
-                                console.log('Detected 503 error, adjusting chunk size to ' + Math.round(CHUNK_SIZE/1024) + 'KB');
-                            }
-                            
-                            // 如果連續503錯誤太多，考慮重新計算總分片數
-                            if (consecutive503Errors > 5 && CHUNK_SIZE === MIN_CHUNK_SIZE) {
-                                updateProgress(
-                                    (uploadedBytes / file.size) * 100, 
-                                    "服務器持續繁忙，已將分片大小降至最小 (" + Math.round(MIN_CHUNK_SIZE/1024) + "KB)...", 
-                                    0
-                                );
-                            }
-                        }
-                        
-                        // 如果是429錯誤（請求過於頻繁），增加更長的等待時間
-                        if (error.message.includes('429') || error.message.includes('請求過於頻繁')) {
-                            waitTime = Math.max(waitTime, 15000 + (retryCount * 5000)); // 15s, 20s, 25s...
-                            
-                            // 對於429錯誤，也適當減小分片大小
-                            if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
-                                CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.85, MIN_CHUNK_SIZE);
-                                console.log('Detected 429 error, adjusting chunk size to ' + Math.round(CHUNK_SIZE/1024) + 'KB');
-                            }
-                        }
-                        
-                        // 如果連續成功，可以嘗試增大分片大小（但要保守一些）
-                        if (retryCount === 0 && i > 0 && CHUNK_SIZE < MAX_CHUNK_SIZE && consecutive503Errors === 0) {
-                            CHUNK_SIZE = Math.min(CHUNK_SIZE * 1.05, MAX_CHUNK_SIZE); // 降低增長率
-                        }
-                        
-                        // 最大等待時間限制為120秒
-                        waitTime = Math.min(waitTime, 120000);
-                        
-                        console.log('Waiting ' + (waitTime/1000) + ' seconds before retrying chunk ' + (i + 1) + '...');
-                        
-                        // 根據錯誤類型顯示不同的用戶提示
-                        let userMessage = "分片 " + (i + 1) + " 上傳失敗，" + (waitTime/1000) + "秒後重試...";
-                        if (error.message.includes('503')) {
-                            userMessage = "服務器暫時繁忙，分片 " + (i + 1) + " 將在" + (waitTime/1000) + "秒後重試...";
-                        } else if (error.message.includes('429')) {
-                            userMessage = "請求過於頻繁，分片 " + (i + 1) + " 將在" + (waitTime/1000) + "秒後重試...";
-                        } else if (error.message.includes('網絡')) {
-                            userMessage = "網絡連接問題，分片 " + (i + 1) + " 將在" + (waitTime/1000) + "秒後重試...";
-                        }
-                        
-                        updateProgress(
-                            (uploadedBytes / file.size) * 100, 
-                            userMessage, 
-                            0
-                        );
-                        
-                        await new Promise(resolve => setTimeout(resolve, waitTime));
-                    }
-                }
-            }
-            
-            // 檢查是否有跳過的分片需要重試
-            const failedChunks = [];
-            for (let j = 0; j < totalChunks; j++) {
-                if (j > lastSuccessfulChunk) {
-                    failedChunks.push(j);
-                }
-            }
-            
-            if (failedChunks.length > 0) {
-                updateProgress(90, "重試 " + failedChunks.length + " 個失敗的分片...", 0);
-                console.log('Retrying failed chunks:', failedChunks);
-                
-                // 重試失敗的分片，使用更小的分片大小
-                const retryChunkSize = Math.max(MIN_CHUNK_SIZE, CHUNK_SIZE * 0.5);
-                
-                for (const chunkIndex of failedChunks) {
-                    const start = chunkIndex * retryChunkSize;
-                    const end = Math.min(start + retryChunkSize, file.size);
-                    const chunk = file.slice(start, end);
-                    
-                    const chunkFormData = new FormData();
-                    chunkFormData.append('chunk', chunk);
-                    chunkFormData.append('uploadId', uploadId);
-                    chunkFormData.append('chunkIndex', chunkIndex);
-                    chunkFormData.append('totalChunks', totalChunks);
-                    
-                    let retrySuccess = false;
-                    for (let attempt = 0; attempt < 3; attempt++) {
-                        try {
-                            const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 60000);
-                            
-                            const response = await fetch('/api/share/file/chunk', {
-                                method: 'POST',
-                                body: chunkFormData,
-                                signal: controller.signal
-                            });
-                            
-                            clearTimeout(timeoutId);
-                            
-                            if (response.ok) {
-                                retrySuccess = true;
-                                uploadedBytes += chunk.size;
-                                break;
-                            }
-                        } catch (error) {
-                            console.warn("Retry attempt " + (attempt + 1) + " failed for chunk " + (chunkIndex + 1) + ":", error);
-                            if (attempt < 2) {
-                                await new Promise(resolve => setTimeout(resolve, 5000 * (attempt + 1)));
-                            }
-                        }
-                    }
-                    
-                    if (!retrySuccess) {
-                        console.error("Failed to retry chunk " + (chunkIndex + 1) + " after 3 attempts");
-                    }
-                }
-            }
-            
-            // 合并分片
-            updateProgress(95, '正在合并文件...', 0);
-            
-            // 創建帶超時的合併請求
-            const mergeController = new AbortController();
-            const mergeTimeoutId = setTimeout(() => mergeController.abort(), 120000); // 120秒超時
-            
-            const mergeResponse = await fetch('/api/share/file/merge', {
+            const response = await fetch('/api/share/file', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    uploadId,
-                    fileName: file.name,
-                    fileSize: file.size,
-                    totalChunks,
-                    expireValue,
-                    expireStyle
-                }),
-                signal: mergeController.signal
+                body: formData
             });
             
-            clearTimeout(mergeTimeoutId);
-            
-            if (!mergeResponse.ok) {
-                const errorData = await mergeResponse.json();
-                throw new Error(errorData.detail || '文件合并失败');
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || '上传失败');
             }
             
-            return await mergeResponse.json();
+            return await response.json();
         }
         
-        // 直接上传（原有方式，用于小文件）
-        function uploadFileDirectly(file, expireValue, expireStyle) {
-            return new Promise((resolve, reject) => {
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('expire_value', expireValue);
-                formData.append('expire_style', expireStyle);
-                
-                const xhr = new XMLHttpRequest();
-                
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        const percent = (e.loaded / e.total) * 100;
-                        const elapsed = (Date.now() - uploadStartTime) / 1000;
-                        const speed = elapsed > 0 ? e.loaded / elapsed : 0;
-                        updateProgress(percent, '正在上传文件...', speed);
-                    }
-                });
-                
-                xhr.addEventListener('load', () => {
-                    if (xhr.status === 200) {
-                        try {
-                            const result = JSON.parse(xhr.responseText);
-                            resolve(result);
-                        } catch (parseError) {
-                            reject(new Error('服务器响应格式错误'));
-                        }
-                    } else {
-                        reject(new Error("上传失败，状态码：" + xhr.status));
-                    }
-                });
-                
-                xhr.addEventListener('error', () => {
-                    reject(new Error('网络错误，上传失败'));
-                });
-                
-                xhr.timeout = 300000; // 5分钟超时
-                xhr.addEventListener('timeout', () => {
-                    reject(new Error('上传超时，请检查网络连接'));
-                });
-                
-                xhr.open('POST', '/api/share/file');
-                xhr.send(formData);
-            });
-        }
         
         document.getElementById('fileForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -1848,8 +1509,8 @@ const getIndexHTML = (env) => {
                 const expireValue = document.getElementById('fileExpireValue').value;
                 const expireStyle = document.getElementById('fileExpireStyle').value;
                 
-                // 使用分片上传或直接上传
-                const result = await uploadFileInChunks(currentFileData, expireValue, expireStyle);
+                // 使用直接上传
+                const result = await uploadFileDirect(currentFileData, expireValue, expireStyle);
                 
                 updateProgress(100, '上传完成！', 0);
                 
@@ -2455,7 +2116,7 @@ app.post('/api/share/text', async (c) => {
     
     const maxTextSize = (function(){
       const n = parseInt(c.env.MAX_TEXT_SIZE) || 0;
-      if (!n) return 1 * 1024 * 1024;
+      if (!n) return 5 * 1024 * 1024; // 默认 5MB
       return n < 100000 ? n * 1024 * 1024 : n;
     })();
     if (new TextEncoder().encode(text).length > maxTextSize) {
@@ -2491,182 +2152,6 @@ app.post('/api/share/text', async (c) => {
   }
 });
 
-// 分片上传 - 上传单个分片
-app.post('/api/share/file/chunk', async (c) => {
-  try {
-    const formData = await c.req.formData();
-    const chunk = formData.get('chunk');
-    const uploadId = formData.get('uploadId');
-    const chunkIndex = parseInt(formData.get('chunkIndex'));
-    const totalChunks = parseInt(formData.get('totalChunks'));
-    
-    if (!chunk || !uploadId || chunkIndex === undefined || totalChunks === undefined) {
-      return c.json({ code: 400, detail: '缺少必要参数' }, 400);
-    }
-    
-    // 添加範圍驗證
-    if (chunkIndex < 0 || chunkIndex >= totalChunks) {
-      return c.json({ code: 400, detail: '分片索引超出範圍' }, 400);
-    }
-    
-    // 将分片数据转换为 ArrayBuffer 并存储到 KV
-    const chunkBuffer = await chunk.arrayBuffer();
-    const chunkKey = `chunk:${uploadId}:${chunkIndex}`;
-    
-    // 将 ArrayBuffer 转换为 base64 字符串存储
-    // 修复：对于大分片，分批处理避免参数过多的错误
-    const uint8Array = new Uint8Array(chunkBuffer);
-    let binaryString = '';
-    const chunkSize = 8192; // 8KB 批次处理
-    for (let i = 0; i < uint8Array.length; i += chunkSize) {
-      const chunk = uint8Array.slice(i, i + chunkSize);
-      binaryString += String.fromCharCode(...chunk);
-    }
-    const base64Chunk = btoa(binaryString);
-    
-    // 存储分片，24小时过期
-    // 添加超时保护和重试机制
-    const maxRetries = 3;
-    let retryCount = 0;
-    
-    while (retryCount < maxRetries) {
-      try {
-        await c.env.FILECODEBOX_KV.put(chunkKey, base64Chunk, { expirationTtl: 86400 });
-        break; // 成功则跳出循环
-      } catch (kvError) {
-        retryCount++;
-        console.error(`KV put failed (attempt ${retryCount}/${maxRetries}):`, kvError);
-        
-        if (retryCount >= maxRetries) {
-          throw new Error("KV 存储失败，已重试 " + maxRetries + " 次: " + kvError.message);
-        }
-        
-        // 等待后重试
-        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-      }
-    }
-    
-    console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded for ${uploadId}`);
-    
-    return c.json({ 
-      code: 200, 
-      detail: { 
-        uploadId, 
-        chunkIndex,
-        message: "分片 " + (chunkIndex + 1) + "/" + totalChunks + " 上传成功" 
-      } 
-    });
-  } catch (error) {
-    console.error('Chunk upload error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    });
-    return c.json({ code: 500, detail: "分片上传失败: " + error.message }, 500);
-  }
-});
-
-// 分片上传 - 合并分片并创建文件分享
-app.post('/api/share/file/merge', async (c) => {
-  try {
-    const body = await c.req.json();
-    const { uploadId, fileName, fileSize, totalChunks, expireValue, expireStyle } = body;
-    
-    if (!uploadId || !fileName || !totalChunks) {
-      return c.json({ code: 400, detail: '缺少必要参数' }, 400);
-    }
-    
-    console.log(`📦 Merging ${totalChunks} chunks for ${fileName}`);
-    
-    // 检查文件大小限制
-    const maxFileSize = (function(){
-      const n = parseInt(c.env.MAX_FILE_SIZE) || 0;
-      if (!n) return 500 * 1024 * 1024; // 默认提高到 500MB
-      return n < 100000 ? n * 1024 * 1024 : n;
-    })();
-    if (fileSize > maxFileSize) {
-      const maxSizeMB = (maxFileSize / 1024 / 1024).toFixed(0);
-      return c.json({ code: 400, detail: "文件大小超过 " + maxSizeMB + "MB 限制" }, 400);
-    }
-    
-    // 優化：流式讀取和合併分片，避免內存溢出
-    const mergedBuffer = new Uint8Array(fileSize);
-    let offset = 0;
-    
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkKey = `chunk:${uploadId}:${i}`;
-      const base64Chunk = await c.env.FILECODEBOX_KV.get(chunkKey);
-      
-      if (!base64Chunk) {
-        return c.json({ code: 400, detail: "分片 " + (i + 1) + " 未找到，请重新上传" }, 400);
-      }
-      
-      // 将 base64 转回 ArrayBuffer
-      const binaryString = atob(base64Chunk);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let j = 0; j < binaryString.length; j++) {
-        bytes[j] = binaryString.charCodeAt(j);
-      }
-      
-      // 直接寫入合併緩衝區，釋放臨時變量
-      mergedBuffer.set(bytes, offset);
-      offset += bytes.length;
-      
-      // 清理引用以幫助垃圾回收
-      bytes.fill(0);
-    }
-    
-    console.log(`✅ Merged file size: ${mergedBuffer.length} bytes`);
-    
-    // 上传到 WebDAV
-    const code = generateCode();
-    const expiredAt = calculateExpireTime(expireValue || 1, expireStyle || 'day');
-    const uuidFileName = uuidv4() + '_' + fileName;
-    const now = new Date();
-    
-    try {
-      await webdavUpload(c.env, uuidFileName, mergedBuffer.buffer);
-      console.log(`✅ File uploaded to WebDAV: ${uuidFileName}`);
-    } catch (webdavError) {
-      console.error('❌ WebDAV upload failed:', webdavError);
-      return c.json({ code: 500, detail: 'WebDAV 存储上传失败: ' + webdavError.message }, 500);
-    }
-    
-    // 清理分片数据
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkKey = `chunk:${uploadId}:${i}`;
-      await c.env.FILECODEBOX_KV.delete(chunkKey);
-    }
-    console.log(`🧹 Cleaned up ${totalChunks} chunks`);
-    
-    // 规范化文件名
-    const lastDotIndex = fileName.lastIndexOf('.');
-    const baseName = lastDotIndex > 0 ? fileName.slice(0, lastDotIndex) : fileName;
-    const extension = lastDotIndex > 0 ? fileName.slice(lastDotIndex) : '';
-
-    const fileData = {
-      code,
-      text: null,
-      size: fileSize,
-      expired_at: expiredAt ? expiredAt.toISOString() : null,
-      expired_count: -1,
-      used_count: 0,
-      created_at: now.toISOString(),
-      prefix: baseName,
-      suffix: extension,
-      uuid_file_name: uuidFileName
-    };
-    
-    await c.env.FILECODEBOX_KV.put(`file:${code}`, JSON.stringify(fileData));
-    console.log(`✅ Created file share: ${code}`);
-    
-    return c.json({ code: 200, detail: { code } });
-  } catch (error) {
-    console.error('File merge error:', error);
-    return c.json({ code: 500, detail: '文件合并失败: ' + error.message }, 500);
-  }
-});
 
 app.post('/api/share/file', async (c) => {
   try {
@@ -2853,14 +2338,6 @@ function readInt(val, def) {
 app.use('/api/share/file', async (c, next) => {
   const lim = readInt(c.env.UPLOAD_FILE_RPM, 10);
   return rateLimit('upload-file', lim, 60)(c, next);
-});
-app.use('/api/share/file/chunk', async (c, next) => {
-  const lim = readInt(c.env.UPLOAD_CHUNK_RPM, 100); // 分片上传需要更高的限制
-  return rateLimit('upload-chunk', lim, 60)(c, next);
-});
-app.use('/api/share/file/merge', async (c, next) => {
-  const lim = readInt(c.env.UPLOAD_FILE_RPM, 10);
-  return rateLimit('upload-merge', lim, 60)(c, next);
 });
 app.use('/api/share/text', async (c, next) => {
   const lim = readInt(c.env.UPLOAD_TEXT_RPM, 20);
