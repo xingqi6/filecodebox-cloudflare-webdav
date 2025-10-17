@@ -19,8 +19,8 @@ WEBDAV_USERNAME = "REPLACE_WITH_WEBDAV_USERNAME"
 #   wrangler secret put PERMANENT_PASSWORD      # 永久保存的密码，默认 123456
 
 # 以下为非敏感/容量限制等可公开变量（可按需覆盖默认值）
-MAX_FILE_SIZE = "500"                              # 文件最大尺寸（MB 或字节）- 提高到 500MB，通过分片上传绕过 Cloudflare 100MB 限制
-MAX_TEXT_SIZE = "1"                                # 文本最大尺寸（MB 或字节）
+MAX_FILE_SIZE = "90"                               # 文件最大尺寸（MB 或字节）- 默认90MB，最大支持500MB
+MAX_TEXT_SIZE = "5"                                # 文本最大尺寸（MB 或字节）- 默认5MB，最大支持1MB
 QR_API = "https://api.qrserver.com/v1/create-qr-code/"   # 二维码服务地址
 NOTICE_TTL_HOURS = "24"                           # 首次声明弹窗再次出现的间隔（小时）
 
