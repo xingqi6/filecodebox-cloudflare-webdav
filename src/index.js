@@ -1443,7 +1443,7 @@ const getIndexHTML = (env) => {
         
         // 分片上传函数
         async function uploadFileInChunks(file, expireValue, expireStyle) {
-            const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB 每片
+            const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB 每片，降低以提高穩定性
             const USE_CHUNKED_UPLOAD_THRESHOLD = 50 * 1024 * 1024; // 50MB 以上使用分片上传
             
             // 小文件使用原有上传方式
@@ -1476,10 +1476,17 @@ const getIndexHTML = (env) => {
                 
                 while (retryCount < maxRetries) {
                     try {
+                        // 創建帶超時的 fetch 請求
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60秒超時
+                        
                         const response = await fetch('/api/share/file/chunk', {
                             method: 'POST',
-                            body: chunkFormData
+                            body: chunkFormData,
+                            signal: controller.signal
                         });
+                        
+                        clearTimeout(timeoutId);
                         
                         if (!response.ok) {
                             throw new Error(\`分片 \${i + 1} 上传失败\`);
@@ -1509,6 +1516,10 @@ const getIndexHTML = (env) => {
             // 合并分片
             updateProgress(95, '正在合并文件...', 0);
             
+            // 創建帶超時的合併請求
+            const mergeController = new AbortController();
+            const mergeTimeoutId = setTimeout(() => mergeController.abort(), 120000); // 120秒超時
+            
             const mergeResponse = await fetch('/api/share/file/merge', {
                 method: 'POST',
                 headers: {
@@ -1521,8 +1532,11 @@ const getIndexHTML = (env) => {
                     totalChunks,
                     expireValue,
                     expireStyle
-                })
+                }),
+                signal: mergeController.signal
             });
+            
+            clearTimeout(mergeTimeoutId);
             
             if (!mergeResponse.ok) {
                 const errorData = await mergeResponse.json();
@@ -2229,8 +2243,13 @@ app.post('/api/share/file/chunk', async (c) => {
     const chunkIndex = parseInt(formData.get('chunkIndex'));
     const totalChunks = parseInt(formData.get('totalChunks'));
     
-    if (!chunk || !uploadId || chunkIndex === undefined) {
+    if (!chunk || !uploadId || chunkIndex === undefined || totalChunks === undefined) {
       return c.json({ code: 400, detail: '缺少必要参数' }, 400);
+    }
+    
+    // 添加範圍驗證
+    if (chunkIndex < 0 || chunkIndex >= totalChunks) {
+      return c.json({ code: 400, detail: '分片索引超出範圍' }, 400);
     }
     
     // 将分片数据转换为 ArrayBuffer 并存储到 KV
@@ -2238,10 +2257,37 @@ app.post('/api/share/file/chunk', async (c) => {
     const chunkKey = `chunk:${uploadId}:${chunkIndex}`;
     
     // 将 ArrayBuffer 转换为 base64 字符串存储
-    const base64Chunk = btoa(String.fromCharCode(...new Uint8Array(chunkBuffer)));
+    // 修复：对于大分片，分批处理避免参数过多的错误
+    const uint8Array = new Uint8Array(chunkBuffer);
+    let binaryString = '';
+    const chunkSize = 8192; // 8KB 批次处理
+    for (let i = 0; i < uint8Array.length; i += chunkSize) {
+      const chunk = uint8Array.slice(i, i + chunkSize);
+      binaryString += String.fromCharCode(...chunk);
+    }
+    const base64Chunk = btoa(binaryString);
     
     // 存储分片，24小时过期
-    await c.env.FILECODEBOX_KV.put(chunkKey, base64Chunk, { expirationTtl: 86400 });
+    // 添加超时保护和重试机制
+    const maxRetries = 3;
+    let retryCount = 0;
+    
+    while (retryCount < maxRetries) {
+      try {
+        await c.env.FILECODEBOX_KV.put(chunkKey, base64Chunk, { expirationTtl: 86400 });
+        break; // 成功则跳出循环
+      } catch (kvError) {
+        retryCount++;
+        console.error(`KV put failed (attempt ${retryCount}/${maxRetries}):`, kvError);
+        
+        if (retryCount >= maxRetries) {
+          throw new Error(`KV 存储失败，已重试 ${maxRetries} 次: ${kvError.message}`);
+        }
+        
+        // 等待后重试
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+      }
+    }
     
     console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded for ${uploadId}`);
     
@@ -2255,7 +2301,12 @@ app.post('/api/share/file/chunk', async (c) => {
     });
   } catch (error) {
     console.error('Chunk upload error:', error);
-    return c.json({ code: 500, detail: '分片上传失败' }, 500);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    return c.json({ code: 500, detail: `分片上传失败: ${error.message}` }, 500);
   }
 });
 
@@ -2282,8 +2333,10 @@ app.post('/api/share/file/merge', async (c) => {
       return c.json({ code: 400, detail: `文件大小超过 ${maxSizeMB}MB 限制` }, 400);
     }
     
-    // 从 KV 读取所有分片
-    const chunks = [];
+    // 優化：流式讀取和合併分片，避免內存溢出
+    const mergedBuffer = new Uint8Array(fileSize);
+    let offset = 0;
+    
     for (let i = 0; i < totalChunks; i++) {
       const chunkKey = `chunk:${uploadId}:${i}`;
       const base64Chunk = await c.env.FILECODEBOX_KV.get(chunkKey);
@@ -2298,16 +2351,13 @@ app.post('/api/share/file/merge', async (c) => {
       for (let j = 0; j < binaryString.length; j++) {
         bytes[j] = binaryString.charCodeAt(j);
       }
-      chunks.push(bytes);
-    }
-    
-    // 合并所有分片
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const mergedBuffer = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      mergedBuffer.set(chunk, offset);
-      offset += chunk.length;
+      
+      // 直接寫入合併緩衝區，釋放臨時變量
+      mergedBuffer.set(bytes, offset);
+      offset += bytes.length;
+      
+      // 清理引用以幫助垃圾回收
+      bytes.fill(0);
     }
     
     console.log(`✅ Merged file size: ${mergedBuffer.length} bytes`);
