@@ -1477,7 +1477,7 @@ const getIndexHTML = (env) => {
             const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
             const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2);
             
-            console.log(\`Starting chunked upload: \${file.name}, size: \${file.size}, chunks: \${totalChunks}\`);
+            console.log('Starting chunked upload: ' + file.name + ', size: ' + file.size + ', chunks: ' + totalChunks);
             
             uploadStartTime = Date.now();
             let uploadedBytes = 0;
@@ -1488,7 +1488,7 @@ const getIndexHTML = (env) => {
             for (let i = 0; i < totalChunks; i++) {
                 // 如果連續錯誤過多，跳過一些分片並在後面重試
                 if (consecutiveErrors >= 3 && i > lastSuccessfulChunk + 1) {
-                    console.log(\`跳過分片 \${i + 1}，將在後面重試\`);
+                    console.log('Skipping chunk ' + (i + 1) + ', will retry later');
                     continue;
                 }
                 const start = i * CHUNK_SIZE;
@@ -1572,7 +1572,7 @@ const getIndexHTML = (env) => {
                             // 動態調整分片大小，減小分片以提高成功率
                             if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
                                 CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.8, MIN_CHUNK_SIZE);
-                                console.log(`檢測到503錯誤，調整分片大小至 ${Math.round(CHUNK_SIZE/1024)}KB`);
+                                console.log('Detected 503 error, adjusting chunk size to ' + Math.round(CHUNK_SIZE/1024) + 'KB');
                             }
                         }
                         
@@ -1583,7 +1583,7 @@ const getIndexHTML = (env) => {
                             // 對於429錯誤，也適當減小分片大小
                             if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
                                 CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.9, MIN_CHUNK_SIZE);
-                                console.log(`檢測到429錯誤，調整分片大小至 ${Math.round(CHUNK_SIZE/1024)}KB`);
+                                console.log('Detected 429 error, adjusting chunk size to ' + Math.round(CHUNK_SIZE/1024) + 'KB');
                             }
                         }
                         
@@ -1595,7 +1595,7 @@ const getIndexHTML = (env) => {
                         // 最大等待時間限制為60秒
                         waitTime = Math.min(waitTime, 60000);
                         
-                        console.log(\`等待 \${waitTime/1000} 秒後重試分片 \${i + 1}...\`);
+                        console.log('Waiting ' + (waitTime/1000) + ' seconds before retrying chunk ' + (i + 1) + '...');
                         
                         // 根據錯誤類型顯示不同的用戶提示
                         let userMessage = \`分片 \${i + 1} 上傳失敗，\${waitTime/1000}秒後重試...\`;
