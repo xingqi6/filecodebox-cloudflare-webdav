@@ -990,7 +990,7 @@ const getIndexHTML = (env) => {
                             <input type="file" id="fileInput" style="display: none;">
                         </div>
                         <div class="file-size-hint">最大支持 ${maxFileMB}MB 文件上传（文本 ${maxTextMB}MB）</div>
-                        <div class="file-size-hint" style="color: #667eea; font-weight: 500; margin-top: 0.5rem;">✨ 选择文件后将自动开始上传</div>
+                        <div class="file-size-hint" style="color: #667eea; font-weight: 500; margin-top: 0.5rem;">✨ 选择文件后点击下方按钮开始上传</div>
                     </div>
                     
                     <div class="upload-progress" id="uploadProgress">
@@ -1016,7 +1016,7 @@ const getIndexHTML = (env) => {
                             </select>
                         </div>
                     </div>
-                    <button type="submit" class="btn" id="fileSubmitBtn">选择文件后自动上传</button>
+                    <button type="submit" class="btn" id="fileSubmitBtn">生成提取码</button>
                 </form>
             </div>
             
@@ -1433,11 +1433,8 @@ const getIndexHTML = (env) => {
             }
             currentFileData = file;
             
-            // 显示文件信息并立即开始上传
-            fileUpload.innerHTML = '📄 <span style="word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; display: inline-block;">' + file.name + '</span><br><small>' + formatFileSize(file.size) + '</small><br><small style="color: #667eea;">⏳ 正在准备上传...</small>';
-            
-            // 立即开始上传
-            startFileUpload();
+            // 显示文件信息，等待用户点击生成提取码按钮
+            fileUpload.innerHTML = '📄 <span style="word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; display: inline-block;">' + file.name + '</span><br><small>' + formatFileSize(file.size) + '</small><br><small style="color: #667eea;">✅ 文件已选择，点击下方按钮开始上传</small>';
         }
         
         function formatFileSize(bytes) {
@@ -1505,26 +1502,52 @@ const getIndexHTML = (env) => {
             return false;
         }
 
-        // 直接上传函数
-        async function uploadFileDirect(file, expireValue, expireStyle) {
+        // 直接上传函数（带进度）
+        function uploadFileDirect(file, expireValue, expireStyle) {
             console.log('Using direct upload for file: ' + file.name);
             
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('expire_value', expireValue);
-            formData.append('expire_style', expireStyle);
-            
-            const response = await fetch('/api/share/file', {
-                method: 'POST',
-                body: formData
+            return new Promise((resolve, reject) => {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('expire_value', expireValue);
+                formData.append('expire_style', expireStyle);
+                
+                const xhr = new XMLHttpRequest();
+                
+                // 监听上传进度
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = (e.loaded / e.total) * 100;
+                        const speed = e.loaded / ((Date.now() - uploadStartTime) / 1000);
+                        updateProgress(percentComplete, '正在上传文件...', speed);
+                    }
+                });
+                
+                xhr.addEventListener('load', () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            resolve(result);
+                        } catch (e) {
+                            reject(new Error('响应解析失败'));
+                        }
+                    } else {
+                        try {
+                            const errorData = JSON.parse(xhr.responseText);
+                            reject(new Error(errorData.detail || '上传失败'));
+                        } catch (e) {
+                            reject(new Error('上传失败'));
+                        }
+                    }
+                });
+                
+                xhr.addEventListener('error', () => {
+                    reject(new Error('网络错误'));
+                });
+                
+                xhr.open('POST', '/api/share/file');
+                xhr.send(formData);
             });
-            
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || '上传失败');
-            }
-            
-            return await response.json();
         }
 
         // 开始文件上传
@@ -1554,10 +1577,9 @@ const getIndexHTML = (env) => {
                 const expireValue = document.getElementById('fileExpireValue').value;
                 const expireStyle = document.getElementById('fileExpireStyle').value;
                 
-                // 模拟进度更新
                 updateProgress(10, '正在上传文件...', 0);
                 
-                // 使用直接上传
+                // 使用带进度的直接上传
                 const result = await uploadFileDirect(currentFileData, expireValue, expireStyle);
                 
                 updateProgress(100, '上传完成！', 0);
