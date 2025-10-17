@@ -1488,7 +1488,7 @@ const getIndexHTML = (env) => {
             for (let i = 0; i < totalChunks; i++) {
                 // 如果連續錯誤過多，跳過一些分片並在後面重試
                 if (consecutiveErrors >= 3 && i > lastSuccessfulChunk + 1) {
-                    console.log(\`跳過分片 \${i + 1}，將在後面重試\`);
+                    console.log('跳過分片 ' + (i + 1) + '，將在後面重試');
                     continue;
                 }
                 const start = i * CHUNK_SIZE;
@@ -1521,13 +1521,13 @@ const getIndexHTML = (env) => {
                         if (!response.ok) {
                             // 針對不同狀態碼進行特殊處理
                             if (response.status === 503) {
-                                throw new Error(\`服務器暫時不可用 (503)，分片 \${i + 1} 上傳失敗\`);
+                                throw new Error('服務器暫時不可用 (503)，分片 ' + (i + 1) + ' 上傳失敗');
                             } else if (response.status === 429) {
-                                throw new Error(\`請求過於頻繁 (429)，分片 \${i + 1} 上傳失敗\`);
+                                throw new Error('請求過於頻繁 (429)，分片 ' + (i + 1) + ' 上傳失敗');
                             } else if (response.status >= 500) {
-                                throw new Error(\`服務器錯誤 (\${response.status})，分片 \${i + 1} 上傳失敗\`);
+                                throw new Error('服務器錯誤 (' + response.status + ')，分片 ' + (i + 1) + ' 上傳失敗');
                             } else {
-                                throw new Error(\`分片 \${i + 1} 上傳失敗，狀態碼：\${response.status}\`);
+                                throw new Error('分片 ' + (i + 1) + ' 上傳失敗，狀態碼：' + response.status);
                             }
                         }
                         
@@ -1535,7 +1535,7 @@ const getIndexHTML = (env) => {
                         const percent = (uploadedBytes / file.size) * 100;
                         const elapsed = (Date.now() - uploadStartTime) / 1000;
                         const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-                        updateProgress(percent, \`正在上傳分片 \${i + 1}/\${totalChunks}...\`, speed);
+                        updateProgress(percent, '正在上傳分片 ' + (i + 1) + '/' + totalChunks + '...', speed);
                         
                         // 重置連續錯誤計數
                         consecutiveErrors = 0;
@@ -1559,7 +1559,7 @@ const getIndexHTML = (env) => {
                         }
                         
                         if (retryCount >= maxRetries) {
-                            throw new Error(\`分片 \${i + 1} 上傳失敗，已重試 \${maxRetries} 次。最後錯誤：\${error.message}\`);
+                            throw new Error('分片 ' + (i + 1) + ' 上傳失敗，已重試 ' + maxRetries + ' 次。最後錯誤：' + error.message);
                         }
                         
                         // 指數退避策略，針對503錯誤增加更長的等待時間
@@ -1572,7 +1572,7 @@ const getIndexHTML = (env) => {
                             // 動態調整分片大小，減小分片以提高成功率
                             if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
                                 CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.8, MIN_CHUNK_SIZE);
-                                console.log(`檢測到503錯誤，調整分片大小至 ${Math.round(CHUNK_SIZE/1024)}KB`);
+                                console.log('檢測到503錯誤，調整分片大小至 ' + Math.round(CHUNK_SIZE/1024) + 'KB');
                             }
                         }
                         
@@ -1583,7 +1583,7 @@ const getIndexHTML = (env) => {
                             // 對於429錯誤，也適當減小分片大小
                             if (CHUNK_SIZE > MIN_CHUNK_SIZE) {
                                 CHUNK_SIZE = Math.max(CHUNK_SIZE * 0.9, MIN_CHUNK_SIZE);
-                                console.log(`檢測到429錯誤，調整分片大小至 ${Math.round(CHUNK_SIZE/1024)}KB`);
+                                console.log('檢測到429錯誤，調整分片大小至 ' + Math.round(CHUNK_SIZE/1024) + 'KB');
                             }
                         }
                         
@@ -1595,16 +1595,16 @@ const getIndexHTML = (env) => {
                         // 最大等待時間限制為60秒
                         waitTime = Math.min(waitTime, 60000);
                         
-                        console.log(\`等待 \${waitTime/1000} 秒後重試分片 \${i + 1}...\`);
+                        console.log('等待 ' + (waitTime/1000) + ' 秒後重試分片 ' + (i + 1) + '...');
                         
                         // 根據錯誤類型顯示不同的用戶提示
-                        let userMessage = \`分片 \${i + 1} 上傳失敗，\${waitTime/1000}秒後重試...\`;
+                        let userMessage = '分片 ' + (i + 1) + ' 上傳失敗，' + (waitTime/1000) + '秒後重試...';
                         if (error.message.includes('503')) {
-                            userMessage = \`服務器暫時繁忙，分片 \${i + 1} 將在\${waitTime/1000}秒後重試...\`;
+                            userMessage = '服務器暫時繁忙，分片 ' + (i + 1) + ' 將在' + (waitTime/1000) + '秒後重試...';
                         } else if (error.message.includes('429')) {
-                            userMessage = \`請求過於頻繁，分片 \${i + 1} 將在\${waitTime/1000}秒後重試...\`;
+                            userMessage = '請求過於頻繁，分片 ' + (i + 1) + ' 將在' + (waitTime/1000) + '秒後重試...';
                         } else if (error.message.includes('網絡')) {
-                            userMessage = \`網絡連接問題，分片 \${i + 1} 將在\${waitTime/1000}秒後重試...\`;
+                            userMessage = '網絡連接問題，分片 ' + (i + 1) + ' 將在' + (waitTime/1000) + '秒後重試...';
                         }
                         
                         updateProgress(
@@ -1685,7 +1685,7 @@ const getIndexHTML = (env) => {
                             reject(new Error('服务器响应格式错误'));
                         }
                     } else {
-                        reject(new Error(\`上传失败，状态码：\${xhr.status}\`));
+                        reject(new Error('上传失败，状态码：' + xhr.status));
                     }
                 });
                 
@@ -2412,7 +2412,7 @@ app.post('/api/share/file/chunk', async (c) => {
         console.error(`KV put failed (attempt ${retryCount}/${maxRetries}):`, kvError);
         
         if (retryCount >= maxRetries) {
-          throw new Error(`KV 存储失败，已重试 ${maxRetries} 次: ${kvError.message}`);
+          throw new Error('KV 存储失败，已重试 ' + maxRetries + ' 次: ' + kvError.message);
         }
         
         // 等待后重试
@@ -2427,7 +2427,7 @@ app.post('/api/share/file/chunk', async (c) => {
       detail: { 
         uploadId, 
         chunkIndex,
-        message: `分片 ${chunkIndex + 1}/${totalChunks} 上传成功` 
+        message: '分片 ' + (chunkIndex + 1) + '/' + totalChunks + ' 上传成功' 
       } 
     });
   } catch (error) {
@@ -2437,7 +2437,7 @@ app.post('/api/share/file/chunk', async (c) => {
       stack: error.stack,
       name: error.name
     });
-    return c.json({ code: 500, detail: `分片上传失败: ${error.message}` }, 500);
+    return c.json({ code: 500, detail: '分片上传失败: ' + error.message }, 500);
   }
 });
 
@@ -2461,7 +2461,7 @@ app.post('/api/share/file/merge', async (c) => {
     })();
     if (fileSize > maxFileSize) {
       const maxSizeMB = (maxFileSize / 1024 / 1024).toFixed(0);
-      return c.json({ code: 400, detail: `文件大小超过 ${maxSizeMB}MB 限制` }, 400);
+      return c.json({ code: 400, detail: '文件大小超过 ' + maxSizeMB + 'MB 限制' }, 400);
     }
     
     // 優化：流式讀取和合併分片，避免內存溢出
@@ -2473,7 +2473,7 @@ app.post('/api/share/file/merge', async (c) => {
       const base64Chunk = await c.env.FILECODEBOX_KV.get(chunkKey);
       
       if (!base64Chunk) {
-        return c.json({ code: 400, detail: `分片 ${i + 1} 未找到，请重新上传` }, 400);
+        return c.json({ code: 400, detail: '分片 ' + (i + 1) + ' 未找到，请重新上传' }, 400);
       }
       
       // 将 base64 转回 ArrayBuffer
@@ -2561,7 +2561,7 @@ app.post('/api/share/file', async (c) => {
     })();
     if (file.size > maxFileSize) {
       const maxSizeMB = (maxFileSize / 1024 / 1024).toFixed(0);
-      return c.json({ code: 400, detail: `文件大小超过 ${maxSizeMB}MB 限制` }, 400);
+      return c.json({ code: 400, detail: '文件大小超过 ' + maxSizeMB + 'MB 限制' }, 400);
     }
     
     const code = generateCode();
