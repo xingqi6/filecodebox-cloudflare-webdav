@@ -1441,6 +1441,143 @@ const getIndexHTML = (env) => {
             updateProgress(0, '准备上传...', 0);
         }
         
+        // 分片上传函数
+        async function uploadFileInChunks(file, expireValue, expireStyle) {
+            const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB 每片
+            const USE_CHUNKED_UPLOAD_THRESHOLD = 50 * 1024 * 1024; // 50MB 以上使用分片上传
+            
+            // 小文件使用原有上传方式
+            if (file.size < USE_CHUNKED_UPLOAD_THRESHOLD) {
+                return uploadFileDirectly(file, expireValue, expireStyle);
+            }
+            
+            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+            const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+            
+            console.log(\`Starting chunked upload: \${file.name}, size: \${file.size}, chunks: \${totalChunks}\`);
+            
+            uploadStartTime = Date.now();
+            let uploadedBytes = 0;
+            
+            // 上传每个分片
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, file.size);
+                const chunk = file.slice(start, end);
+                
+                const chunkFormData = new FormData();
+                chunkFormData.append('chunk', chunk);
+                chunkFormData.append('uploadId', uploadId);
+                chunkFormData.append('chunkIndex', i);
+                chunkFormData.append('totalChunks', totalChunks);
+                
+                let retryCount = 0;
+                const maxRetries = 3;
+                
+                while (retryCount < maxRetries) {
+                    try {
+                        const response = await fetch('/api/share/file/chunk', {
+                            method: 'POST',
+                            body: chunkFormData
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(\`分片 \${i + 1} 上传失败\`);
+                        }
+                        
+                        uploadedBytes += chunk.size;
+                        const percent = (uploadedBytes / file.size) * 100;
+                        const elapsed = (Date.now() - uploadStartTime) / 1000;
+                        const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
+                        updateProgress(percent, \`正在上传分片 \${i + 1}/\${totalChunks}...\`, speed);
+                        
+                        break; // 成功后跳出重试循环
+                    } catch (error) {
+                        retryCount++;
+                        console.error(\`Chunk \${i + 1} upload failed (attempt \${retryCount}/\${maxRetries}):, error\`);
+                        
+                        if (retryCount >= maxRetries) {
+                            throw new Error(\`分片 \${i + 1} 上传失败，已重试 \${maxRetries} 次\`);
+                        }
+                        
+                        // 等待后重试
+                        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+                    }
+                }
+            }
+            
+            // 合并分片
+            updateProgress(95, '正在合并文件...', 0);
+            
+            const mergeResponse = await fetch('/api/share/file/merge', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    uploadId,
+                    fileName: file.name,
+                    fileSize: file.size,
+                    totalChunks,
+                    expireValue,
+                    expireStyle
+                })
+            });
+            
+            if (!mergeResponse.ok) {
+                const errorData = await mergeResponse.json();
+                throw new Error(errorData.detail || '文件合并失败');
+            }
+            
+            return await mergeResponse.json();
+        }
+        
+        // 直接上传（原有方式，用于小文件）
+        function uploadFileDirectly(file, expireValue, expireStyle) {
+            return new Promise((resolve, reject) => {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('expire_value', expireValue);
+                formData.append('expire_style', expireStyle);
+                
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = (e.loaded / e.total) * 100;
+                        const elapsed = (Date.now() - uploadStartTime) / 1000;
+                        const speed = elapsed > 0 ? e.loaded / elapsed : 0;
+                        updateProgress(percent, '正在上传文件...', speed);
+                    }
+                });
+                
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            resolve(result);
+                        } catch (parseError) {
+                            reject(new Error('服务器响应格式错误'));
+                        }
+                    } else {
+                        reject(new Error(\`上传失败，状态码：\${xhr.status}\`));
+                    }
+                });
+                
+                xhr.addEventListener('error', () => {
+                    reject(new Error('网络错误，上传失败'));
+                });
+                
+                xhr.timeout = 300000; // 5分钟超时
+                xhr.addEventListener('timeout', () => {
+                    reject(new Error('上传超时，请检查网络连接'));
+                });
+                
+                xhr.open('POST', '/api/share/file');
+                xhr.send(formData);
+            });
+        }
+        
         document.getElementById('fileForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             if (!currentFileData) {
@@ -1457,73 +1594,41 @@ const getIndexHTML = (env) => {
                 showUploadProgress();
                 uploadStartTime = Date.now();
                 
-                const formData = new FormData();
-                formData.append('file', currentFileData);
-                formData.append('expire_value', document.getElementById('fileExpireValue').value);
-                formData.append('expire_style', document.getElementById('fileExpireStyle').value);
+                const expireValue = document.getElementById('fileExpireValue').value;
+                const expireStyle = document.getElementById('fileExpireStyle').value;
                 
+                // 使用分片上传或直接上传
+                const result = await uploadFileInChunks(currentFileData, expireValue, expireStyle);
                 
-                const xhr = new XMLHttpRequest();
+                updateProgress(100, '上传完成！', 0);
                 
-                xhr.upload.addEventListener('progress', (e) => {
-                    if (e.lengthComputable) {
-                        const percent = (e.loaded / e.total) * 100;
-                        const elapsed = (Date.now() - uploadStartTime) / 1000;
-                        const speed = elapsed > 0 ? e.loaded / elapsed : 0;
-                        updateProgress(percent, '正在上传文件...', speed);
-                    }
-                });
-                
-                xhr.addEventListener('load', () => {
-                    if (xhr.status === 200) {
-                        updateProgress(100, '上传完成！', 0);
-                        
-                        try {
-                            const result = JSON.parse(xhr.responseText);
-                            if (result.code === 200) {
-                                const code = result.detail.code || result.detail;
-                                
-                                LocalStorage.addSendRecord({
-                                    code: code,
-                                    fileName: currentFileData.name,
-                                    fileSize: currentFileData.size,
-                                    type: 'file',
-                                    expireValue: document.getElementById('fileExpireValue').value,
-                                    expireStyle: document.getElementById('fileExpireStyle').value
-                                });
-                                
-                                showSuccessModal(code, currentFileData.name, currentFileData.size, 'file');
-                                
-                                const shareLink = \`\${window.location.origin}/?code=\${code}\`;
-                                copyToClipboard(shareLink);
-                                showNotification('✅ 取件链接已复制到剪贴板', 'success');
-                                
-                                hideUploadProgress();
-                            } else {
-                                alert(result.detail || '上传失败');
-                                hideUploadProgress();
-                            }
-                        } catch (parseError) {
-                            alert('服务器响应格式错误');
-                            hideUploadProgress();
-                        }
-                    } else {
-                        alert('上传失败，状态码：' + xhr.status);
-                        hideUploadProgress();
-                    }
-                });
-                
-                xhr.addEventListener('error', () => {
-                    alert('网络错误，上传失败');
+                if (result.code === 200) {
+                    const code = result.detail.code || result.detail;
+                    
+                    LocalStorage.addSendRecord({
+                        code: code,
+                        fileName: currentFileData.name,
+                        fileSize: currentFileData.size,
+                        type: 'file',
+                        expireValue: expireValue,
+                        expireStyle: expireStyle
+                    });
+                    
+                    showSuccessModal(code, currentFileData.name, currentFileData.size, 'file');
+                    
+                    const shareLink = \`\${window.location.origin}/?code=\${code}\`;
+                    copyToClipboard(shareLink);
+                    showNotification('✅ 取件链接已复制到剪贴板', 'success');
+                    
                     hideUploadProgress();
-                });
-                
-                xhr.open('POST', '/api/share/file');
-                // 不设置 Content-Type，让浏览器自动设置 multipart/form-data
-                xhr.send(formData);
+                } else {
+                    alert(result.detail || '上传失败');
+                    hideUploadProgress();
+                }
                 
             } catch (error) {
-                alert('上传过程中发生错误');
+                console.error('Upload error:', error);
+                alert('上传失败: ' + error.message);
                 hideUploadProgress();
             } finally {
                 submitBtn.disabled = false;
@@ -2115,6 +2220,147 @@ app.post('/api/share/text', async (c) => {
   }
 });
 
+// 分片上传 - 上传单个分片
+app.post('/api/share/file/chunk', async (c) => {
+  try {
+    const formData = await c.req.formData();
+    const chunk = formData.get('chunk');
+    const uploadId = formData.get('uploadId');
+    const chunkIndex = parseInt(formData.get('chunkIndex'));
+    const totalChunks = parseInt(formData.get('totalChunks'));
+    
+    if (!chunk || !uploadId || chunkIndex === undefined) {
+      return c.json({ code: 400, detail: '缺少必要参数' }, 400);
+    }
+    
+    // 将分片数据转换为 ArrayBuffer 并存储到 KV
+    const chunkBuffer = await chunk.arrayBuffer();
+    const chunkKey = `chunk:${uploadId}:${chunkIndex}`;
+    
+    // 将 ArrayBuffer 转换为 base64 字符串存储
+    const base64Chunk = btoa(String.fromCharCode(...new Uint8Array(chunkBuffer)));
+    
+    // 存储分片，24小时过期
+    await c.env.FILECODEBOX_KV.put(chunkKey, base64Chunk, { expirationTtl: 86400 });
+    
+    console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded for ${uploadId}`);
+    
+    return c.json({ 
+      code: 200, 
+      detail: { 
+        uploadId, 
+        chunkIndex,
+        message: `分片 ${chunkIndex + 1}/${totalChunks} 上传成功` 
+      } 
+    });
+  } catch (error) {
+    console.error('Chunk upload error:', error);
+    return c.json({ code: 500, detail: '分片上传失败' }, 500);
+  }
+});
+
+// 分片上传 - 合并分片并创建文件分享
+app.post('/api/share/file/merge', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { uploadId, fileName, fileSize, totalChunks, expireValue, expireStyle } = body;
+    
+    if (!uploadId || !fileName || !totalChunks) {
+      return c.json({ code: 400, detail: '缺少必要参数' }, 400);
+    }
+    
+    console.log(`📦 Merging ${totalChunks} chunks for ${fileName}`);
+    
+    // 检查文件大小限制
+    const maxFileSize = (function(){
+      const n = parseInt(c.env.MAX_FILE_SIZE) || 0;
+      if (!n) return 500 * 1024 * 1024; // 默认提高到 500MB
+      return n < 100000 ? n * 1024 * 1024 : n;
+    })();
+    if (fileSize > maxFileSize) {
+      const maxSizeMB = (maxFileSize / 1024 / 1024).toFixed(0);
+      return c.json({ code: 400, detail: `文件大小超过 ${maxSizeMB}MB 限制` }, 400);
+    }
+    
+    // 从 KV 读取所有分片
+    const chunks = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkKey = `chunk:${uploadId}:${i}`;
+      const base64Chunk = await c.env.FILECODEBOX_KV.get(chunkKey);
+      
+      if (!base64Chunk) {
+        return c.json({ code: 400, detail: `分片 ${i + 1} 未找到，请重新上传` }, 400);
+      }
+      
+      // 将 base64 转回 ArrayBuffer
+      const binaryString = atob(base64Chunk);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let j = 0; j < binaryString.length; j++) {
+        bytes[j] = binaryString.charCodeAt(j);
+      }
+      chunks.push(bytes);
+    }
+    
+    // 合并所有分片
+    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const mergedBuffer = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      mergedBuffer.set(chunk, offset);
+      offset += chunk.length;
+    }
+    
+    console.log(`✅ Merged file size: ${mergedBuffer.length} bytes`);
+    
+    // 上传到 WebDAV
+    const code = generateCode();
+    const expiredAt = calculateExpireTime(expireValue || 1, expireStyle || 'day');
+    const uuidFileName = uuidv4() + '_' + fileName;
+    const now = new Date();
+    
+    try {
+      await webdavUpload(c.env, uuidFileName, mergedBuffer.buffer);
+      console.log(`✅ File uploaded to WebDAV: ${uuidFileName}`);
+    } catch (webdavError) {
+      console.error('❌ WebDAV upload failed:', webdavError);
+      return c.json({ code: 500, detail: 'WebDAV 存储上传失败: ' + webdavError.message }, 500);
+    }
+    
+    // 清理分片数据
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkKey = `chunk:${uploadId}:${i}`;
+      await c.env.FILECODEBOX_KV.delete(chunkKey);
+    }
+    console.log(`🧹 Cleaned up ${totalChunks} chunks`);
+    
+    // 规范化文件名
+    const lastDotIndex = fileName.lastIndexOf('.');
+    const baseName = lastDotIndex > 0 ? fileName.slice(0, lastDotIndex) : fileName;
+    const extension = lastDotIndex > 0 ? fileName.slice(lastDotIndex) : '';
+
+    const fileData = {
+      code,
+      text: null,
+      size: fileSize,
+      expired_at: expiredAt ? expiredAt.toISOString() : null,
+      expired_count: -1,
+      used_count: 0,
+      created_at: now.toISOString(),
+      prefix: baseName,
+      suffix: extension,
+      uuid_file_name: uuidFileName
+    };
+    
+    await c.env.FILECODEBOX_KV.put(`file:${code}`, JSON.stringify(fileData));
+    console.log(`✅ Created file share: ${code}`);
+    
+    return c.json({ code: 200, detail: { code } });
+  } catch (error) {
+    console.error('File merge error:', error);
+    return c.json({ code: 500, detail: '文件合并失败: ' + error.message }, 500);
+  }
+});
+
 app.post('/api/share/file', async (c) => {
   try {
     const formData = await c.req.formData();
@@ -2300,6 +2546,14 @@ function readInt(val, def) {
 app.use('/api/share/file', async (c, next) => {
   const lim = readInt(c.env.UPLOAD_FILE_RPM, 10);
   return rateLimit('upload-file', lim, 60)(c, next);
+});
+app.use('/api/share/file/chunk', async (c, next) => {
+  const lim = readInt(c.env.UPLOAD_CHUNK_RPM, 100); // 分片上传需要更高的限制
+  return rateLimit('upload-chunk', lim, 60)(c, next);
+});
+app.use('/api/share/file/merge', async (c, next) => {
+  const lim = readInt(c.env.UPLOAD_FILE_RPM, 10);
+  return rateLimit('upload-merge', lim, 60)(c, next);
 });
 app.use('/api/share/text', async (c, next) => {
   const lim = readInt(c.env.UPLOAD_TEXT_RPM, 20);
