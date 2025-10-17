@@ -1576,7 +1576,7 @@ const getIndexHTML = (env) => {
                     
                     showSuccessModal(code, currentFileData.name, currentFileData.size, 'file');
                     
-                    const shareLink = `${window.location.origin}/?code=${code}`;
+                    const shareLink = \`\${location.origin}/?code=\${code}\`;
                     copyToClipboard(shareLink);
                     showNotification('✅ 取件链接已复制到剪贴板', 'success');
                     
